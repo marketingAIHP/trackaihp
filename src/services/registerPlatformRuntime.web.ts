@@ -18,8 +18,10 @@ export async function registerPlatformRuntime() {
   }
 
   window.addEventListener('load', () => {
-    navigator.serviceWorker.register('/sw.js').catch(() => {
-      // Basic offline support is best-effort on web.
-    });
+    navigator.serviceWorker.getRegistrations()
+      .then((registrations) => Promise.all(registrations.map((registration) => registration.unregister())))
+      .catch(() => {
+        // Removing stale caches is best-effort on web.
+      });
   });
 }

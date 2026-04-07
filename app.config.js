@@ -1,5 +1,11 @@
 import 'dotenv/config';
 
+const getEnv = (...keys) => keys.map((key) => process.env[key]).find(Boolean) || '';
+
+const supabaseUrl = getEnv('SUPABASE_URL', 'EXPO_PUBLIC_SUPABASE_URL');
+const supabaseAnonKey = getEnv('SUPABASE_ANON_KEY', 'EXPO_PUBLIC_SUPABASE_ANON_KEY');
+const googleMapsApiKey = getEnv('GOOGLE_MAPS_API_KEY', 'EXPO_PUBLIC_GOOGLE_MAPS_API_KEY');
+
 export default {
   expo: {
     name: 'AIHP CrewTrack',
@@ -32,7 +38,7 @@ export default {
           'We need your location to track attendance and work site proximity',
       },
       config: {
-        googleMapsApiKey: process.env.GOOGLE_MAPS_API_KEY || '',
+        googleMapsApiKey,
       },
     },
     android: {
@@ -51,7 +57,7 @@ export default {
       ],
       config: {
         googleMaps: {
-          apiKey: process.env.GOOGLE_MAPS_API_KEY || '',
+          apiKey: googleMapsApiKey,
         },
       },
     },
@@ -93,9 +99,9 @@ export default {
       // For Expo Go, maps will show a placeholder or use web maps
     ],
     extra: {
-      supabaseUrl: process.env.SUPABASE_URL || '',
-      supabaseAnonKey: process.env.SUPABASE_ANON_KEY || '',
-      googleMapsApiKey: process.env.GOOGLE_MAPS_API_KEY || '',
+      supabaseUrl,
+      supabaseAnonKey,
+      googleMapsApiKey,
       eas: {
         projectId: '0fb5aecb-8923-4ed3-a7b4-009652522764',
       },
