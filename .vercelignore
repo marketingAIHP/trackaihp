@@ -1,0 +1,14 @@
+android/
+ios/
+node_modules/
+dist/
+dist-web/
+.expo/
+.gradle/
+.vscode/
+*.apk
+*.aab
+*.ipa
+*.log
+.env
+.env.*

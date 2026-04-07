@@ -1,0 +1,83 @@
+# OSX
+.DS_Store
+
+# Xcode
+build/
+*.pbxuser
+!default.pbxuser
+*.mode1v3
+!default.mode1v3
+*.mode2v3
+!default.mode2v3
+*.perspectivev3
+!default.perspectivev3
+xcuserdata
+*.xccheckout
+*.moved-aside
+DerivedData
+*.hmap
+*.ipa
+*.xcuserstate
+project.xcworkspace
+
+# Android/IntelliJ
+android/
+build/
+.idea
+.gradle
+local.properties
+*.iml
+*.hprof
+.cxx/
+*.keystore
+!debug.keystore
+
+# node.js
+node_modules/
+npm-debug.log
+yarn-error.log
+
+# fastlane
+fastlane/report.xml
+fastlane/Preview.html
+fastlane/screenshots
+fastlane/test_output
+
+# Bundle artifacts
+*.jsbundle
+
+# CocoaPods
+/ios/Pods
+ios/
+
+# Expo
+.expo/
+.expo-shared/
+dist/
+dist-web/
+web-build/
+
+# Environment variables
+.env
+.env.*
+.env.local
+.env.production
+.env.development
+
+# TypeScript
+*.tsbuildinfo
+
+# Misc
+*.log
+*.swp
+*.swo
+*~
+
+# Testing
+coverage/
+
+# Production builds
+*.apk
+*.aab
+*.ipa
+.vercel
