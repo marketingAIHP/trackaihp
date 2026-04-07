@@ -140,15 +140,15 @@ function AppContent() {
 // Main app component with providers
 export default function App() {
   return (
-    <ErrorBoundary>
-      <GestureHandlerRootView style={styles.container}>
-        <SafeAreaProvider>
+    <GestureHandlerRootView style={styles.container}>
+      <SafeAreaProvider>
+        <ErrorBoundary>
           <QueryClientProvider client={queryClient}>
             <AppContent />
           </QueryClientProvider>
-        </SafeAreaProvider>
-      </GestureHandlerRootView>
-    </ErrorBoundary>
+        </ErrorBoundary>
+      </SafeAreaProvider>
+    </GestureHandlerRootView>
   );
 }
 

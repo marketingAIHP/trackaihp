@@ -1,7 +1,6 @@
 import React, {Component, ErrorInfo, ReactNode} from 'react';
 import {View, StyleSheet} from 'react-native';
 import {Text, Button, Card} from 'react-native-paper';
-import {SafeAreaView} from 'react-native-safe-area-context';
 import {MaterialCommunityIcons as Icon} from '@expo/vector-icons';
 
 interface Props {
@@ -58,7 +57,7 @@ export class ErrorBoundary extends Component<Props, State> {
       }
 
       return (
-        <SafeAreaView style={styles.container} edges={['top', 'bottom']}>
+        <View style={styles.container}>
           <View style={styles.content}>
             <Card style={styles.card}>
               <Card.Content style={styles.cardContent}>
@@ -90,7 +89,7 @@ export class ErrorBoundary extends Component<Props, State> {
               </Card.Content>
             </Card>
           </View>
-        </SafeAreaView>
+        </View>
       );
     }
 
