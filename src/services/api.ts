@@ -840,13 +840,28 @@ export const adminApi = {
 
       // Get employee IDs for live location lookup
       const employeeIds = [...new Set(adminEmployees.map((att: any) => att.employee_id))];
+      const earliestActiveCheckIn = adminEmployees.reduce<string | null>((earliest, attendance: any) => {
+        const checkIn = attendance.check_in_time;
+        if (!checkIn) return earliest;
+        if (!earliest) return checkIn;
 
-      const { data: liveLocations, error: liveError } = await db.location_tracking
+        return parseTimestamp(checkIn).getTime() < parseTimestamp(earliest).getTime()
+          ? checkIn
+          : earliest;
+      }, null);
+
+      let liveLocationQuery = db.location_tracking
         .select('*')
         .in('employee_id', employeeIds)
         .order('timestamp', { ascending: false })   // Prefer newest GPS event time
         .order('id', { ascending: false })          // Tie-breaker when timestamps are equal
         .limit(employeeIds.length * 5);
+
+      if (earliestActiveCheckIn) {
+        liveLocationQuery = liveLocationQuery.gte('timestamp', earliestActiveCheckIn);
+      }
+
+      const { data: liveLocations, error: liveError } = await liveLocationQuery;
 
       // Create a map of employee_id -> live location (most recent by timestamp)
       const liveLocationMap = new Map<number, any>();
@@ -878,7 +893,13 @@ export const adminApi = {
         seenEmployeeIds.add(attendance.employee_id);
 
         // Check for live location first
-        const liveLocation = liveLocationMap.get(attendance.employee_id);
+        const candidateLiveLocation = liveLocationMap.get(attendance.employee_id);
+        const checkInTs = parseTimestamp(attendance.check_in_time).getTime();
+        const liveLocation =
+          candidateLiveLocation &&
+          parseTimestamp(candidateLiveLocation.timestamp).getTime() >= checkInTs
+            ? candidateLiveLocation
+            : null;
 
         let lat: number;
         let lng: number;

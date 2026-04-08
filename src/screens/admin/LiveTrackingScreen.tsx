@@ -38,7 +38,8 @@ export const LiveTrackingScreen: React.FC = () => {
   }, []);
 
   // Get employeeId from route params if provided (for filtering to specific employee)
-  const employeeId = (route.params as any)?.employeeId;
+  const rawEmployeeId = (route.params as { employeeId?: number | string } | undefined)?.employeeId;
+  const employeeId = rawEmployeeId !== undefined ? Number(rawEmployeeId) : undefined;
   const { data: locations, isLoading, error, refetch, isFetching } = useQuery({
     queryKey: ['admin', 'locations', adminId, employeeId],
     queryFn: async () => {

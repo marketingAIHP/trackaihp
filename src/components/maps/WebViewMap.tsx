@@ -55,8 +55,10 @@ export const WebViewMap: React.FC<WebViewMapProps> = ({
   const mapUrl = useMemo(() => {
     if (!GOOGLE_MAPS_API_KEY) return null;
 
-    const width = 1200;
-    const scaledHeight = Math.max(400, Math.round((height || 300) * 2));
+    // Google Static Maps standard API rejects oversized `size` values.
+    // Keep the requested image within supported bounds, then let the UI scale it.
+    const width = 640;
+    const scaledHeight = Math.min(640, Math.max(320, Math.round((height || 300) * 1.5)));
 
     const params = new URLSearchParams({
       center: `${latitude},${longitude}`,
