@@ -1,5 +1,5 @@
 import React, { useState, useEffect, useCallback } from 'react';
-import { View, StyleSheet, TouchableOpacity, ScrollView } from 'react-native';
+import { View, StyleSheet, TouchableOpacity, ScrollView, Platform, useWindowDimensions } from 'react-native';
 import { SafeAreaView } from 'react-native-safe-area-context';
 import { Text, ActivityIndicator, Button, useTheme } from 'react-native-paper';
 import { useRoute } from '@react-navigation/native';
@@ -27,9 +27,12 @@ export const LiveTrackingScreen: React.FC = () => {
   const route = useRoute();
   const queryClient = useQueryClient();
   const { currentUser } = useAuth();
+  const { width } = useWindowDimensions();
   const adminId = currentUser?.id || 0;
   const [selectedLocation, setSelectedLocation] = useState<{ latitude: number; longitude: number } | null>(null);
   const [isRefreshing, setIsRefreshing] = useState(false);
+  const isWeb = Platform.OS === 'web';
+  const isWideWeb = isWeb && width >= 1100;
   // Tick every 30s so "X min ago" labels update automatically without waiting for a refetch
   const [, setClockTick] = useState(0);
   useEffect(() => {
@@ -205,116 +208,120 @@ export const LiveTrackingScreen: React.FC = () => {
 
   return (
     <SafeAreaView style={styles.container} edges={['top']}>
-      <View style={styles.mapViewContainer}>
+      <View style={[styles.mapViewContainer, isWeb && styles.mapViewContainerWeb]}>
         {safeLocations.length > 0 ? (
           <View style={styles.mapAndLegendContainer}>
-            <View style={styles.mapSection}>
-              <View style={styles.mapHeader}>
-                <View style={styles.titleContainer}>
-                  <Text variant="titleMedium" style={styles.sectionTitle}>
-                    {employeeId
-                      ? safeLocations && safeLocations.length > 0 && safeLocations[0]?.employee
-                        ? `Tracking - ${safeLocations[0].employee.first_name} ${safeLocations[0].employee.last_name}`
-                        : 'Employee Location'
-                      : 'Employee Locations'}
-                  </Text>
-                  <View style={styles.headerStatusRow}>
-                    <Icon name="crosshairs-gps" size={12} color={theme.colors.primary} />
-                    <Text variant="bodySmall" style={styles.headerStatusText}>
-                      {(employeeId ? safeLocations[0]?.timestamp : latestLocation?.timestamp)
-                        ? `Last updated: ${formatLastUpdated(employeeId ? safeLocations[0].timestamp : latestLocation?.timestamp)}`
-                        : 'Waiting...'}
+            <View style={[styles.liveTrackingBody, isWideWeb && styles.liveTrackingBodyWeb]}>
+              <View style={[styles.mapSection, isWeb && styles.mapSectionWeb, isWideWeb && styles.mapSectionWideWeb]}>
+                <View style={styles.mapHeader}>
+                  <View style={styles.titleContainer}>
+                    <Text variant="titleMedium" style={styles.sectionTitle}>
+                      {employeeId
+                        ? safeLocations && safeLocations.length > 0 && safeLocations[0]?.employee
+                          ? `Tracking - ${safeLocations[0].employee.first_name} ${safeLocations[0].employee.last_name}`
+                          : 'Employee Location'
+                        : 'Employee Locations'}
                     </Text>
-                    {isFetching && (
-                      <Text variant="bodySmall" style={styles.syncingText}>
-                        (Syncing...)
+                    <View style={styles.headerStatusRow}>
+                      <Icon name="crosshairs-gps" size={12} color={theme.colors.primary} />
+                      <Text variant="bodySmall" style={styles.headerStatusText}>
+                        {(employeeId ? safeLocations[0]?.timestamp : latestLocation?.timestamp)
+                          ? `Last updated: ${formatLastUpdated(employeeId ? safeLocations[0].timestamp : latestLocation?.timestamp)}`
+                          : 'Waiting...'}
                       </Text>
-                    )}
+                      {isFetching && (
+                        <Text variant="bodySmall" style={styles.syncingText}>
+                          (Syncing...)
+                        </Text>
+                      )}
+                    </View>
+                    {employeeId && safeLocations[0]?.check_in_time ? (
+                      <Text variant="bodySmall" style={styles.checkInText}>
+                        Checked in: {formatTime(safeLocations[0].check_in_time)}
+                      </Text>
+                    ) : null}
                   </View>
-                  {employeeId && safeLocations[0]?.check_in_time ? (
-                    <Text variant="bodySmall" style={styles.checkInText}>
-                      Checked in: {formatTime(safeLocations[0].check_in_time)}
+                  <TouchableOpacity
+                    style={[
+                      styles.refreshButton,
+                      { backgroundColor: theme.colors.primaryContainer },
+                      (isRefreshing || isFetching) && styles.refreshButtonDisabled,
+                    ]}
+                    onPress={handleRefresh}
+                    disabled={isRefreshing || isFetching}>
+                    {isRefreshing || isFetching ? (
+                      <ActivityIndicator size={20} color={theme.colors.primary} />
+                    ) : (
+                      <Icon name="refresh" size={20} color={theme.colors.primary} />
+                    )}
+                  </TouchableOpacity>
+                </View>
+
+                <View style={[styles.mapWrapper, isWeb && styles.mapWrapperWeb, isWideWeb && styles.mapWrapperWideWeb]}>
+                  <WebViewMap
+                    key={mapMarkers.map(marker => `${marker.id}:${marker.latitude}:${marker.longitude}:${marker.lastUpdated}`).join('|')}
+                    latitude={mapCenter.latitude}
+                    longitude={mapCenter.longitude}
+                    markers={mapMarkers}
+                    height={isWideWeb ? 360 : isWeb ? 320 : undefined}
+                    zoom={13}
+                  />
+                </View>
+              </View>
+
+              <View style={[styles.bottomInfoSection, isWeb && styles.bottomInfoSectionWeb, isWideWeb && styles.bottomInfoSectionWideWeb]}>
+                <View style={[styles.legendRow, isWideWeb && styles.legendRowWideWeb]}>
+                  <View style={styles.legendItem}>
+                    <View style={[styles.legendDot, { backgroundColor: '#10b981' }]} />
+                    <Text variant="labelSmall">On Site</Text>
+                  </View>
+                  <View style={styles.legendItem}>
+                    <View style={[styles.legendDot, { backgroundColor: '#ef4444' }]} />
+                    <Text variant="labelSmall">Off Site</Text>
+                  </View>
+                </View>
+
+                {mapMarkers.length > 0 && (
+                  <View style={styles.fixedMarkerList}>
+                    <Text variant="labelSmall" style={styles.markerListTitle}>
+                      ACTIVE EMPLOYEES ({mapMarkers.length})
                     </Text>
-                  ) : null}
-                </View>
-                <TouchableOpacity
-                  style={[
-                    styles.refreshButton,
-                    { backgroundColor: theme.colors.primaryContainer },
-                    (isRefreshing || isFetching) && styles.refreshButtonDisabled,
-                  ]}
-                  onPress={handleRefresh}
-                  disabled={isRefreshing || isFetching}>
-                  {isRefreshing || isFetching ? (
-                    <ActivityIndicator size={20} color={theme.colors.primary} />
-                  ) : (
-                    <Icon name="refresh" size={20} color={theme.colors.primary} />
-                  )}
-                </TouchableOpacity>
+                    <ScrollView
+                      style={[styles.markerListScroll, isWideWeb && styles.markerListScrollWideWeb]}
+                      nestedScrollEnabled={true}
+                      showsVerticalScrollIndicator={false}
+                    >
+                      {mapMarkers.map((marker, index) => (
+                        <TouchableOpacity
+                          key={index}
+                          style={[styles.markerRow, isWideWeb && styles.markerRowWideWeb]}
+                          onPress={() => {
+                            setSelectedLocation({
+                              latitude: Number(marker.latitude),
+                              longitude: Number(marker.longitude),
+                            });
+                          }}
+                        >
+                          <View style={[
+                            styles.markerBadge,
+                            { backgroundColor: marker.isOnSite ? '#10b981' : '#ef4444' }
+                          ]}>
+                            <Text style={styles.markerBadgeText}>{marker.label}</Text>
+                          </View>
+                          <View style={styles.markerTextGroup}>
+                            <Text variant="bodySmall" numberOfLines={1} style={styles.markerName}>
+                              {marker.employeeName}
+                            </Text>
+                            <Text variant="bodySmall" style={styles.markerTime}>
+                              {marker.lastUpdated ? `Updated: ${formatLastUpdated(marker.lastUpdated)}` : ''}
+                            </Text>
+                          </View>
+                        </TouchableOpacity>
+                      ))}
+                    </ScrollView>
+                  </View>
+                )}
               </View>
-
-              <View style={styles.mapWrapper}>
-                <WebViewMap
-                  key={mapMarkers.map(marker => `${marker.id}:${marker.latitude}:${marker.longitude}:${marker.lastUpdated}`).join('|')}
-                  latitude={mapCenter.latitude}
-                  longitude={mapCenter.longitude}
-                  markers={mapMarkers}
-                  height={undefined}
-                  zoom={13}
-                />
-              </View>
-            </View>
-
-            <View style={styles.bottomInfoSection}>
-              <View style={styles.legendRow}>
-                <View style={styles.legendItem}>
-                  <View style={[styles.legendDot, { backgroundColor: '#10b981' }]} />
-                  <Text variant="labelSmall">On Site</Text>
-                </View>
-                <View style={styles.legendItem}>
-                  <View style={[styles.legendDot, { backgroundColor: '#ef4444' }]} />
-                  <Text variant="labelSmall">Off Site</Text>
-                </View>
-              </View>
-
-              {mapMarkers.length > 0 && (
-                <View style={styles.fixedMarkerList}>
-                  <Text variant="labelSmall" style={styles.markerListTitle}>
-                    ACTIVE EMPLOYEES ({mapMarkers.length})
-                  </Text>
-                  <ScrollView
-                    style={styles.markerListScroll}
-                    nestedScrollEnabled={true}
-                    showsVerticalScrollIndicator={false}
-                  >
-                    {mapMarkers.map((marker, index) => (
-                      <TouchableOpacity
-                        key={index}
-                        style={styles.markerRow}
-                        onPress={() => {
-                          setSelectedLocation({
-                            latitude: Number(marker.latitude),
-                            longitude: Number(marker.longitude),
-                          });
-                        }}
-                      >
-                        <View style={[
-                          styles.markerBadge,
-                          { backgroundColor: marker.isOnSite ? '#10b981' : '#ef4444' }
-                        ]}>
-                          <Text style={styles.markerBadgeText}>{marker.label}</Text>
-                        </View>
-                        <Text variant="bodySmall" numberOfLines={1} style={styles.markerName}>
-                          {marker.employeeName}
-                        </Text>
-                        <Text variant="bodySmall" style={styles.markerTime}>
-                          {marker.lastUpdated ? `Updated: ${formatLastUpdated(marker.lastUpdated)}` : ''}
-                        </Text>
-                      </TouchableOpacity>
-                    ))}
-                  </ScrollView>
-                </View>
-              )}
             </View>
           </View>
         ) : (
@@ -353,13 +360,38 @@ const styles = StyleSheet.create({
     flex: 1,
     backgroundColor: '#fff',
   },
+  mapViewContainerWeb: {
+    width: '100%',
+    maxWidth: 1400,
+    alignSelf: 'center',
+  },
   mapAndLegendContainer: {
     flex: 1,
+  },
+  liveTrackingBody: {
+    flex: 1,
+  },
+  liveTrackingBodyWeb: {
+    flexDirection: 'row',
+    alignItems: 'flex-start',
+    gap: 16,
+    paddingHorizontal: 16,
+    paddingBottom: 16,
   },
   mapSection: {
     flex: 2.0, // Increased vertical length
     marginHorizontal: 16, // Side margins for "card" look
     marginBottom: 16, // Bottom margin
+  },
+  mapSectionWeb: {
+    flex: 0,
+    marginTop: 12,
+  },
+  mapSectionWideWeb: {
+    flex: 1,
+    marginHorizontal: 0,
+    marginBottom: 0,
+    minWidth: 0,
   },
   mapWrapper: {
     flex: 1,
@@ -371,6 +403,13 @@ const styles = StyleSheet.create({
     shadowOffset: { width: 0, height: 2 },
     shadowOpacity: 0.1,
     shadowRadius: 8,
+  },
+  mapWrapperWeb: {
+    flex: 0,
+    height: 320,
+  },
+  mapWrapperWideWeb: {
+    height: 360,
   },
   floatingStatus: {
     position: 'absolute',
@@ -399,11 +438,29 @@ const styles = StyleSheet.create({
     padding: 16,
     flex: 1,
   },
+  bottomInfoSectionWeb: {
+    flex: 0,
+    paddingTop: 8,
+  },
+  bottomInfoSectionWideWeb: {
+    width: 340,
+    flexShrink: 0,
+    borderTopWidth: 0,
+    borderWidth: 1,
+    borderColor: '#e0e0e0',
+    borderRadius: 12,
+    paddingTop: 16,
+    alignSelf: 'stretch',
+  },
   legendRow: {
     flexDirection: 'row',
     justifyContent: 'center',
     marginBottom: 16,
     gap: 20,
+  },
+  legendRowWideWeb: {
+    justifyContent: 'flex-start',
+    marginBottom: 12,
   },
   legendDot: {
     width: 10,
@@ -425,11 +482,18 @@ const styles = StyleSheet.create({
   markerListScroll: {
     maxHeight: 250,
   },
+  markerListScrollWideWeb: {
+    maxHeight: 320,
+  },
   markerRow: {
     flexDirection: 'row',
     alignItems: 'center',
     marginBottom: 8,
     paddingVertical: 4,
+  },
+  markerRowWideWeb: {
+    alignItems: 'flex-start',
+    paddingVertical: 8,
   },
   markerBadge: {
     width: 20,
@@ -445,12 +509,16 @@ const styles = StyleSheet.create({
     fontWeight: 'bold',
   },
   markerName: {
-    flex: 1,
     fontWeight: '500',
+  },
+  markerTextGroup: {
+    flex: 1,
+    minWidth: 0,
   },
   markerTime: {
     color: '#999',
     fontSize: 10,
+    marginTop: 2,
   },
   scrollView: {
     flex: 1,
