@@ -1,5 +1,5 @@
 import React, { useMemo, useState } from 'react';
-import { View, StyleSheet, ActivityIndicator, Text, Pressable } from 'react-native';
+import { View, StyleSheet, ActivityIndicator, Text, Pressable, Linking } from 'react-native';
 import { Image } from 'expo-image';
 import { MaterialCommunityIcons as Icon } from '@expo/vector-icons';
 import { GOOGLE_MAPS_API_KEY } from '../../constants/config';
@@ -88,6 +88,14 @@ export const WebViewMap: React.FC<WebViewMapProps> = ({
     return `https://maps.googleapis.com/maps/api/staticmap?${params.toString()}`;
   }, [height, latitude, longitude, markers, zoom]);
 
+  const browserMapUrl = useMemo(() => {
+    const marker = markers[0];
+    if (marker) {
+      return `https://www.google.com/maps/search/?api=1&query=${Number(marker.latitude)},${Number(marker.longitude)}`;
+    }
+    return `https://www.google.com/maps/search/?api=1&query=${latitude},${longitude}`;
+  }, [latitude, longitude, markers]);
+
   if (!mapUrl) {
     return (
       <View style={[styles.container, height ? { height } : { flex: 1 }, styles.errorContainer]}>
@@ -123,6 +131,16 @@ export const WebViewMap: React.FC<WebViewMapProps> = ({
       {hasError && (
         <View style={styles.errorOverlay}>
           <Text style={styles.errorText}>Google map could not be loaded.</Text>
+          <Text style={styles.errorHint}>
+            Web map images can fail when the Google Maps key does not allow browser referrers or the Static Maps API.
+          </Text>
+          <Pressable
+            style={styles.fallbackButton}
+            onPress={() => {
+              void Linking.openURL(browserMapUrl);
+            }}>
+            <Text style={styles.fallbackButtonText}>Open map in browser</Text>
+          </Pressable>
         </View>
       )}
 
@@ -189,6 +207,25 @@ const styles = StyleSheet.create({
     textAlign: 'center',
     color: '#666',
     fontSize: 14,
+  },
+  errorHint: {
+    marginTop: 8,
+    textAlign: 'center',
+    color: '#888',
+    fontSize: 12,
+    lineHeight: 18,
+    maxWidth: 280,
+  },
+  fallbackButton: {
+    marginTop: 16,
+    backgroundColor: '#7c1d3a',
+    paddingHorizontal: 16,
+    paddingVertical: 10,
+    borderRadius: 8,
+  },
+  fallbackButtonText: {
+    color: '#fff',
+    fontWeight: '600',
   },
   zoomControls: {
     position: 'absolute',
