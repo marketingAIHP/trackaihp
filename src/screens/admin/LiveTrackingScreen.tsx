@@ -206,6 +206,139 @@ export const LiveTrackingScreen: React.FC = () => {
     );
   }
 
+  if (isWeb && safeLocations.length > 0) {
+    return (
+      <SafeAreaView style={styles.container} edges={['top']}>
+        <ScrollView style={styles.webScrollView} contentContainerStyle={styles.webScrollContent}>
+          <View style={styles.webShell}>
+            <View style={styles.webTopCard}>
+              <View style={styles.webTopCardContent}>
+                <View style={styles.titleContainer}>
+                  <Text variant="titleMedium" style={styles.sectionTitle}>
+                    {employeeId
+                      ? safeLocations[0]?.employee
+                        ? `Tracking - ${safeLocations[0].employee.first_name} ${safeLocations[0].employee.last_name}`
+                        : 'Employee Location'
+                      : 'Employee Locations'}
+                  </Text>
+                  <View style={styles.headerStatusRow}>
+                    <Icon name="crosshairs-gps" size={12} color={theme.colors.primary} />
+                    <Text variant="bodySmall" style={styles.headerStatusText}>
+                      {activeTimestamp
+                        ? `Last updated: ${formatLastUpdated(activeTimestamp)}`
+                        : 'Waiting for the first location sync...'}
+                    </Text>
+                    {isFetching && (
+                      <Text variant="bodySmall" style={styles.syncingText}>
+                        (Syncing...)
+                      </Text>
+                    )}
+                  </View>
+                  {employeeId && safeLocations[0]?.check_in_time ? (
+                    <Text variant="bodySmall" style={styles.checkInText}>
+                      Checked in: {formatTime(safeLocations[0].check_in_time)}
+                    </Text>
+                  ) : null}
+                </View>
+                <TouchableOpacity
+                  style={[
+                    styles.refreshButton,
+                    styles.webRefreshButton,
+                    { backgroundColor: theme.colors.primaryContainer },
+                    (isRefreshing || isFetching) && styles.refreshButtonDisabled,
+                  ]}
+                  onPress={handleRefresh}
+                  disabled={isRefreshing || isFetching}>
+                  {isRefreshing || isFetching ? (
+                    <ActivityIndicator size={20} color={theme.colors.primary} />
+                  ) : (
+                    <Icon name="refresh" size={20} color={theme.colors.primary} />
+                  )}
+                </TouchableOpacity>
+              </View>
+            </View>
+
+            <View style={styles.webMapCard}>
+              <View style={styles.webMapCardInner}>
+                <WebViewMap
+                  key={mapMarkers.map(marker => `${marker.id}:${marker.latitude}:${marker.longitude}:${marker.lastUpdated}`).join('|')}
+                  latitude={mapCenter.latitude}
+                  longitude={mapCenter.longitude}
+                  markers={mapMarkers}
+                  height={520}
+                  zoom={13}
+                />
+                <TouchableOpacity
+                  style={styles.webMapLink}
+                  onPress={() => {
+                    void Linking.openURL(`https://www.google.com/maps/search/?api=1&query=${mapCenter.latitude},${mapCenter.longitude}`);
+                  }}>
+                  <Icon name="open-in-new" size={16} color="#7c1d3a" />
+                  <Text variant="bodySmall" style={styles.webMapLinkText}>
+                    Open live map in browser
+                  </Text>
+                </TouchableOpacity>
+              </View>
+            </View>
+
+            <View style={styles.webBottomCard}>
+              <View style={styles.legendRowWebCard}>
+                <View style={styles.legendItem}>
+                  <View style={[styles.legendDot, { backgroundColor: '#10b981' }]} />
+                  <Text variant="labelSmall">On Site</Text>
+                </View>
+                <View style={styles.legendItem}>
+                  <View style={[styles.legendDot, { backgroundColor: '#ef4444' }]} />
+                  <Text variant="labelSmall">Off Site</Text>
+                </View>
+              </View>
+
+              <View style={styles.fixedMarkerList}>
+                <Text variant="labelSmall" style={styles.markerListTitle}>
+                  ACTIVE EMPLOYEES ({mapMarkers.length})
+                </Text>
+                <View style={styles.webMarkerList}>
+                  {mapMarkers.map((marker, index) => (
+                    <TouchableOpacity
+                      key={index}
+                      style={[styles.markerRow, styles.markerRowWeb, styles.webMarkerRowCard]}
+                      onPress={() => {
+                        setSelectedLocation({
+                          latitude: Number(marker.latitude),
+                          longitude: Number(marker.longitude),
+                        });
+                      }}
+                    >
+                      <View style={[
+                        styles.markerBadge,
+                        { backgroundColor: marker.isOnSite ? '#10b981' : '#ef4444' }
+                      ]}>
+                        <Text style={styles.markerBadgeText}>{marker.label}</Text>
+                      </View>
+                      <View style={styles.markerMeta}>
+                        <Text variant="bodySmall" numberOfLines={1} style={styles.markerName}>
+                          {marker.employeeName}
+                        </Text>
+                        {marker.siteName ? (
+                          <Text variant="bodySmall" style={styles.markerSite}>
+                            {marker.siteName}
+                          </Text>
+                        ) : null}
+                      </View>
+                      <Text variant="bodySmall" style={styles.markerTime}>
+                        {marker.lastUpdated ? `Updated: ${formatLastUpdated(marker.lastUpdated)}` : ''}
+                      </Text>
+                    </TouchableOpacity>
+                  ))}
+                </View>
+              </View>
+            </View>
+          </View>
+        </ScrollView>
+      </SafeAreaView>
+    );
+  }
+
   return (
     <SafeAreaView style={styles.container} edges={['top']}>
       <View style={styles.mapViewContainer}>
@@ -371,6 +504,63 @@ const styles = StyleSheet.create({
     marginVertical: 16,
     fontSize: 16,
   },
+  webScrollView: {
+    flex: 1,
+  },
+  webScrollContent: {
+    padding: 24,
+  },
+  webShell: {
+    width: '100%',
+    maxWidth: 1400,
+    alignSelf: 'center',
+    gap: 20,
+  },
+  webTopCard: {
+    backgroundColor: '#fff',
+    borderRadius: 18,
+    borderWidth: 1,
+    borderColor: '#e5e7eb',
+    padding: 20,
+    shadowColor: '#000',
+    shadowOffset: { width: 0, height: 8 },
+    shadowOpacity: 0.05,
+    shadowRadius: 18,
+  },
+  webTopCardContent: {
+    flexDirection: 'row',
+    alignItems: 'flex-start',
+    justifyContent: 'space-between',
+    gap: 16,
+  },
+  webMapCard: {
+    backgroundColor: '#fff',
+    borderRadius: 20,
+    borderWidth: 1,
+    borderColor: '#e5e7eb',
+    padding: 18,
+    shadowColor: '#000',
+    shadowOffset: { width: 0, height: 12 },
+    shadowOpacity: 0.06,
+    shadowRadius: 24,
+  },
+  webMapCardInner: {
+    position: 'relative',
+    borderRadius: 16,
+    overflow: 'hidden',
+    backgroundColor: '#eef2f7',
+  },
+  webBottomCard: {
+    backgroundColor: '#fff',
+    borderRadius: 18,
+    borderWidth: 1,
+    borderColor: '#e5e7eb',
+    padding: 20,
+    shadowColor: '#000',
+    shadowOffset: { width: 0, height: 8 },
+    shadowOpacity: 0.05,
+    shadowRadius: 18,
+  },
   mapViewContainer: {
     flex: 1,
     backgroundColor: '#fff',
@@ -463,6 +653,12 @@ const styles = StyleSheet.create({
   legendRowWeb: {
     justifyContent: 'flex-start',
   },
+  legendRowWebCard: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: 28,
+    marginBottom: 16,
+  },
   legendDot: {
     width: 10,
     height: 10,
@@ -492,6 +688,16 @@ const styles = StyleSheet.create({
   markerRowWeb: {
     paddingVertical: 10,
     gap: 12,
+  },
+  webMarkerList: {
+    gap: 8,
+  },
+  webMarkerRowCard: {
+    marginBottom: 0,
+    paddingHorizontal: 8,
+    paddingVertical: 12,
+    borderRadius: 12,
+    backgroundColor: '#f8fafc',
   },
   markerBadge: {
     width: 20,
@@ -584,6 +790,9 @@ const styles = StyleSheet.create({
   },
   refreshButtonDisabled: {
     opacity: 0.5,
+  },
+  webRefreshButton: {
+    marginTop: 4,
   },
   webMapLink: {
     position: 'absolute',
