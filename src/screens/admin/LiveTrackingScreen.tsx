@@ -1,5 +1,5 @@
 import React, { useState, useEffect, useCallback } from 'react';
-import { View, StyleSheet, TouchableOpacity, ScrollView, Platform } from 'react-native';
+import { View, StyleSheet, TouchableOpacity, ScrollView, Platform, Linking } from 'react-native';
 import { SafeAreaView } from 'react-native-safe-area-context';
 import { Text, ActivityIndicator, Button, useTheme } from 'react-native-paper';
 import { useRoute } from '@react-navigation/native';
@@ -183,6 +183,8 @@ export const LiveTrackingScreen: React.FC = () => {
     };
   });
 
+  const activeTimestamp = employeeId ? safeLocations[0]?.timestamp : latestLocation?.timestamp;
+
   if (isLoading && !isRefreshing && !locations) {
     return (
       <View style={styles.loadingContainer}>
@@ -208,7 +210,7 @@ export const LiveTrackingScreen: React.FC = () => {
     <SafeAreaView style={styles.container} edges={['top']}>
       <View style={styles.mapViewContainer}>
         {safeLocations.length > 0 ? (
-          <View style={styles.mapAndLegendContainer}>
+          <View style={[styles.mapAndLegendContainer, isWeb && styles.mapAndLegendContainerWeb]}>
             <View style={[styles.mapSection, isWeb && styles.mapSectionWeb]}>
               <View style={styles.mapHeader}>
                 <View style={styles.titleContainer}>
@@ -222,9 +224,9 @@ export const LiveTrackingScreen: React.FC = () => {
                   <View style={styles.headerStatusRow}>
                     <Icon name="crosshairs-gps" size={12} color={theme.colors.primary} />
                     <Text variant="bodySmall" style={styles.headerStatusText}>
-                      {(employeeId ? safeLocations[0]?.timestamp : latestLocation?.timestamp)
-                        ? `Last updated: ${formatLastUpdated(employeeId ? safeLocations[0].timestamp : latestLocation?.timestamp)}`
-                        : 'Waiting...'}
+                      {activeTimestamp
+                        ? `Last updated: ${formatLastUpdated(activeTimestamp)}`
+                        : 'Waiting for the first location sync...'}
                     </Text>
                     {isFetching && (
                       <Text variant="bodySmall" style={styles.syncingText}>
@@ -260,14 +262,26 @@ export const LiveTrackingScreen: React.FC = () => {
                   latitude={mapCenter.latitude}
                   longitude={mapCenter.longitude}
                   markers={mapMarkers}
-                  height={isWeb ? 320 : undefined}
+                  height={isWeb ? 460 : undefined}
                   zoom={13}
                 />
+                {isWeb && (
+                  <TouchableOpacity
+                    style={styles.webMapLink}
+                    onPress={() => {
+                      void Linking.openURL(`https://www.google.com/maps/search/?api=1&query=${mapCenter.latitude},${mapCenter.longitude}`);
+                    }}>
+                    <Icon name="open-in-new" size={16} color="#7c1d3a" />
+                    <Text variant="bodySmall" style={styles.webMapLinkText}>
+                      Open live map in browser
+                    </Text>
+                  </TouchableOpacity>
+                )}
               </View>
             </View>
 
             <View style={[styles.bottomInfoSection, isWeb && styles.bottomInfoSectionWeb]}>
-              <View style={styles.legendRow}>
+              <View style={[styles.legendRow, isWeb && styles.legendRowWeb]}>
                 <View style={styles.legendItem}>
                   <View style={[styles.legendDot, { backgroundColor: '#10b981' }]} />
                   <Text variant="labelSmall">On Site</Text>
@@ -291,7 +305,7 @@ export const LiveTrackingScreen: React.FC = () => {
                     {mapMarkers.map((marker, index) => (
                       <TouchableOpacity
                         key={index}
-                        style={styles.markerRow}
+                        style={[styles.markerRow, isWeb && styles.markerRowWeb]}
                         onPress={() => {
                           setSelectedLocation({
                             latitude: Number(marker.latitude),
@@ -305,9 +319,16 @@ export const LiveTrackingScreen: React.FC = () => {
                         ]}>
                           <Text style={styles.markerBadgeText}>{marker.label}</Text>
                         </View>
-                        <Text variant="bodySmall" numberOfLines={1} style={styles.markerName}>
-                          {marker.employeeName}
-                        </Text>
+                        <View style={styles.markerMeta}>
+                          <Text variant="bodySmall" numberOfLines={1} style={styles.markerName}>
+                            {marker.employeeName}
+                          </Text>
+                          {marker.siteName ? (
+                            <Text variant="bodySmall" style={styles.markerSite}>
+                              {marker.siteName}
+                            </Text>
+                          ) : null}
+                        </View>
                         <Text variant="bodySmall" style={styles.markerTime}>
                           {marker.lastUpdated ? `Updated: ${formatLastUpdated(marker.lastUpdated)}` : ''}
                         </Text>
@@ -357,14 +378,23 @@ const styles = StyleSheet.create({
   mapAndLegendContainer: {
     flex: 1,
   },
+  mapAndLegendContainerWeb: {
+    flex: 0,
+    flexDirection: 'row',
+    alignItems: 'flex-start',
+    gap: 20,
+    padding: 20,
+  },
   mapSection: {
     flex: 2.0, // Increased vertical length
     marginHorizontal: 16, // Side margins for "card" look
     marginBottom: 16, // Bottom margin
   },
   mapSectionWeb: {
-    flex: 0,
-    marginTop: 12,
+    flex: 1,
+    marginHorizontal: 0,
+    marginBottom: 0,
+    minWidth: 0,
   },
   mapWrapper: {
     flex: 1,
@@ -379,7 +409,10 @@ const styles = StyleSheet.create({
   },
   mapWrapperWeb: {
     flex: 0,
-    height: 320,
+    height: 460,
+    borderWidth: 1,
+    borderColor: '#e5e7eb',
+    backgroundColor: '#eef2f7',
   },
   floatingStatus: {
     position: 'absolute',
@@ -410,13 +443,25 @@ const styles = StyleSheet.create({
   },
   bottomInfoSectionWeb: {
     flex: 0,
-    paddingTop: 8,
+    width: 360,
+    borderWidth: 1,
+    borderColor: '#e5e7eb',
+    borderRadius: 16,
+    paddingTop: 16,
+    minHeight: 460,
+    shadowColor: '#000',
+    shadowOffset: { width: 0, height: 8 },
+    shadowOpacity: 0.06,
+    shadowRadius: 20,
   },
   legendRow: {
     flexDirection: 'row',
     justifyContent: 'center',
     marginBottom: 16,
     gap: 20,
+  },
+  legendRowWeb: {
+    justifyContent: 'flex-start',
   },
   legendDot: {
     width: 10,
@@ -444,6 +489,10 @@ const styles = StyleSheet.create({
     marginBottom: 8,
     paddingVertical: 4,
   },
+  markerRowWeb: {
+    paddingVertical: 10,
+    gap: 12,
+  },
   markerBadge: {
     width: 20,
     height: 20,
@@ -461,9 +510,20 @@ const styles = StyleSheet.create({
     flex: 1,
     fontWeight: '500',
   },
+  markerMeta: {
+    flex: 1,
+    minWidth: 0,
+  },
+  markerSite: {
+    color: '#6b7280',
+    fontSize: 12,
+    marginTop: 2,
+  },
   markerTime: {
     color: '#999',
     fontSize: 10,
+    maxWidth: 130,
+    textAlign: 'right',
   },
   scrollView: {
     flex: 1,
@@ -524,6 +584,24 @@ const styles = StyleSheet.create({
   },
   refreshButtonDisabled: {
     opacity: 0.5,
+  },
+  webMapLink: {
+    position: 'absolute',
+    left: 16,
+    bottom: 16,
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: 8,
+    backgroundColor: 'rgba(255,255,255,0.95)',
+    borderRadius: 999,
+    paddingHorizontal: 14,
+    paddingVertical: 10,
+    borderWidth: 1,
+    borderColor: '#f1d4dd',
+  },
+  webMapLinkText: {
+    color: '#7c1d3a',
+    fontWeight: '600',
   },
   lastUpdatedContainer: {
     flexDirection: 'row',
