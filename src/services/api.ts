@@ -50,6 +50,106 @@ function getAutoCheckoutDeadline(checkInTime: string | Date): Date {
   return deadline;
 }
 
+function inferCheckoutType(
+  checkInTime: string | Date,
+  checkOutTime?: string | Date | null,
+  storedCheckoutType?: string | null
+): CheckoutType | undefined {
+  if (storedCheckoutType === 'manual_checkout' || storedCheckoutType === 'auto_checkout') {
+    return storedCheckoutType;
+  }
+
+  if (!checkOutTime) {
+    return undefined;
+  }
+
+  const deadline = getAutoCheckoutDeadline(checkInTime).getTime();
+  const actualCheckout = parseTimestamp(checkOutTime).getTime();
+
+  if (!Number.isNaN(deadline) && !Number.isNaN(actualCheckout) && actualCheckout === deadline) {
+    return 'auto_checkout';
+  }
+
+  return 'manual_checkout';
+}
+
+function isAttendanceExpired(checkInTime: string | Date, referenceTime: Date = new Date()): boolean {
+  const deadline = getAutoCheckoutDeadline(checkInTime);
+  return referenceTime.getTime() >= deadline.getTime();
+}
+
+async function expireAttendanceRecordIfNeeded(attendance: any, referenceTime: Date = new Date()): Promise<boolean> {
+  if (!attendance?.id || attendance.check_out_time || !attendance.check_in_time) {
+    return false;
+  }
+
+  const autoCheckoutAt = getAutoCheckoutDeadline(attendance.check_in_time);
+  if (referenceTime.getTime() < autoCheckoutAt.getTime()) {
+    return false;
+  }
+
+  const checkoutLatitude =
+    attendance.check_in_latitude != null ? Number(attendance.check_in_latitude) : null;
+  const checkoutLongitude =
+    attendance.check_in_longitude != null ? Number(attendance.check_in_longitude) : null;
+
+  const { error } = await db.attendance
+    .update({
+      check_out_time: autoCheckoutAt.toISOString(),
+      check_out_latitude: checkoutLatitude,
+      check_out_longitude: checkoutLongitude,
+      check_out_location_name: attendance.check_in_location_name || 'Auto checkout',
+      checkout_type: 'auto_checkout',
+    })
+    .eq('id', attendance.id)
+    .is('check_out_time', null);
+
+  if (error) {
+    logger.warn('Failed to expire stale attendance record:', {
+      attendanceId: attendance.id,
+      employeeId: attendance.employee_id,
+      error,
+    });
+    return false;
+  }
+
+  if (attendance.employee_id) {
+    await db.location_tracking
+      .delete()
+      .eq('employee_id', attendance.employee_id)
+      .then(() => {}, () => {});
+  }
+
+  return true;
+}
+
+async function filterActiveAttendances<T extends { check_in_time: string; check_out_time?: string | null }>(
+  attendances: T[] | null | undefined,
+  referenceTime: Date = new Date()
+): Promise<T[]> {
+  if (!attendances || attendances.length === 0) {
+    return [];
+  }
+
+  const activeAttendances: T[] = [];
+  for (const attendance of attendances) {
+    if (attendance.check_out_time) {
+      continue;
+    }
+
+    if (isAttendanceExpired(attendance.check_in_time, referenceTime)) {
+      const expired = await expireAttendanceRecordIfNeeded(attendance, referenceTime);
+      if (expired) {
+        continue;
+      }
+    }
+
+    activeAttendances.push(attendance);
+  }
+
+  return activeAttendances;
+}
+
 async function resolveLocationName(
   location: { latitude: number; longitude: number } | null | undefined
 ): Promise<string> {
@@ -601,11 +701,18 @@ export const adminApi = {
       let on_site_now = 0;
 
       if (employeeIds.length > 0) {
-        const onSiteResult = await db.attendance
-          .select('id', { count: 'exact', head: true })
+        const { data: onSiteAttendances, error: onSiteError } = await db.attendance
+          .select('id, employee_id, check_in_time, check_out_time, check_in_latitude, check_in_longitude, check_in_location_name')
           .is('check_out_time', null)
-          .in('employee_id', employeeIds);
-        on_site_now = onSiteResult.count || 0;
+          .in('employee_id', employeeIds)
+          .order('check_in_time', { ascending: false });
+
+        if (onSiteError) {
+          return { success: false, error: onSiteError.message || 'Failed to load on-site counts' };
+        }
+
+        const activeAttendances = await filterActiveAttendances(onSiteAttendances || []);
+        on_site_now = new Set(activeAttendances.map((attendance: any) => attendance.employee_id)).size;
       }
 
       return {
@@ -758,8 +865,9 @@ export const adminApi = {
           return { success: false, error: attendanceError.message || 'Failed to load site attendance' };
         }
 
+        const freshAttendance = await filterActiveAttendances(activeAttendance || []);
         const seenEmployeeIds = new Set<number>();
-        onSiteEmployees = (activeAttendance || []).filter((row: any) => {
+        onSiteEmployees = freshAttendance.filter((row: any) => {
           if (!row.employee || seenEmployeeIds.has(row.employee_id)) return false;
           seenEmployeeIds.add(row.employee_id);
           return true;
@@ -790,11 +898,10 @@ export const adminApi = {
         return { success: false, error: 'Supabase is not configured' };
       }
 
-      // Step 1: Get all currently checked-in employees for this admin
-      // CRITICAL: Filter out stale attendance records (older than 24 hours)
-      // This prevents showing employees who checked in days/weeks ago and never checked out
+      // Step 1: Get all currently checked-in employees for this admin.
+      // We do not apply a hard 24-hour cutoff here because the actual
+      // attendance rule is "active until next-day 5:00 AM local time".
       const now = new Date();
-      const twentyFourHoursAgo = new Date(now.getTime() - 24 * 60 * 60 * 1000);
 
       const { data: activeAttendance, error: attendanceError } = await db.attendance
         .select(`
@@ -816,7 +923,6 @@ export const adminApi = {
           site:work_sites(id, name, latitude, longitude, geofence_radius)
         `)
         .is('check_out_time', null)
-        .gte('check_in_time', twentyFourHoursAgo.toISOString())
         .not('check_in_latitude', 'is', null)
         .not('check_in_longitude', 'is', null)
         .order('check_in_time', { ascending: false });
@@ -825,12 +931,14 @@ export const adminApi = {
         return { success: false, error: attendanceError.message || 'Failed to load locations' };
       }
 
-      if (!activeAttendance || activeAttendance.length === 0) {
+      const freshAttendance = await filterActiveAttendances(activeAttendance || [], now);
+
+      if (freshAttendance.length === 0) {
         return { success: true, data: [] };
       }
 
       // Filter to only this admin's employees
-      const adminEmployees = activeAttendance.filter((att: any) =>
+      const adminEmployees = freshAttendance.filter((att: any) =>
         att.employee && att.employee.admin_id === adminId
       );
 
@@ -1433,10 +1541,12 @@ export const adminApi = {
         return { success: false, error: error.message || 'Failed to load on-site employees' };
       }
 
+      const freshAttendance = await filterActiveAttendances(data || []);
+
       // Filter out null employees and DEDUPLICATE by employee_id
       // Keep only the most recent check-in per employee (first occurrence since sorted desc)
       const seenEmployeeIds = new Set<number>();
-      const uniqueData = (data || []).filter((item: any) => {
+      const uniqueData = freshAttendance.filter((item: any) => {
         if (!item.employee) return false;
         if (seenEmployeeIds.has(item.employee_id)) return false;
         seenEmployeeIds.add(item.employee_id);
@@ -1483,12 +1593,14 @@ export const adminApi = {
         return { success: false, error: checkInError.message || 'Failed to load attendance' };
       }
 
+      const freshCheckIns = await filterActiveAttendances(allCheckIns || []);
+
       // Filter employees who are checked in but outside their assigned site's geofence
       // DEDUPLICATE by employee_id - only keep the most recent check-in per employee
       const notAtSite: any[] = [];
       const seenEmployeeIds = new Set<number>();
 
-      for (const attendance of allCheckIns || []) {
+      for (const attendance of freshCheckIns) {
         const employee = attendance.employee;
 
         // Skip if no employee data
@@ -1914,6 +2026,7 @@ export const adminApi = {
         const employeeName = row.employee
           ? `${row.employee.first_name} ${row.employee.last_name}`.trim()
           : 'Unknown Employee';
+        const checkoutType = inferCheckoutType(row.check_in_time, row.check_out_time, row.checkout_type);
         const status: AttendanceReportRecord['attendance_status'] = row.is_remote_location
           ? 'remote_work'
           : row.check_out_time
@@ -1930,7 +2043,7 @@ export const adminApi = {
           check_out_location: row.check_out_time
             ? formatLocationLabel(row.check_out_latitude, row.check_out_longitude)
             : 'Pending',
-          checkout_type: row.check_out_time ? (row.checkout_type || 'manual_checkout') : 'pending',
+          checkout_type: row.check_out_time ? (checkoutType || 'manual_checkout') : 'pending',
           site_name: row.site?.name || 'Remote Work',
           attendance_status: status,
         } as AttendanceReportRecord;
@@ -1973,12 +2086,14 @@ export const adminApi = {
         .not('check_in_latitude', 'is', null)
         .not('check_in_longitude', 'is', null);
 
-      if (!activeCheckIns || activeCheckIns.length === 0) {
+      const freshCheckIns = await filterActiveAttendances(activeCheckIns || []);
+
+      if (freshCheckIns.length === 0) {
         return { success: true };
       }
 
       // Check each check-in for geofence violations
-      for (const attendance of activeCheckIns) {
+      for (const attendance of freshCheckIns) {
         const employee = (attendance as any).employee;
         const site = (attendance as any).site;
 
@@ -2088,34 +2203,15 @@ export const employeeApi = {
         return { success: true, data: null };
       }
 
-      const autoCheckoutAt = getAutoCheckoutDeadline(activeAttendance.check_in_time);
-      if (now >= autoCheckoutAt) {
-        const checkoutLocation =
-          activeAttendance.check_in_latitude != null && activeAttendance.check_in_longitude != null
-            ? {
-                latitude: activeAttendance.check_in_latitude,
-                longitude: activeAttendance.check_in_longitude,
-              }
-            : null;
-
-        const { error: checkoutError } = await db.attendance
-            .update({
-              check_out_time: autoCheckoutAt.toISOString(),
-              check_out_latitude: checkoutLocation?.latitude || null,
-              check_out_longitude: checkoutLocation?.longitude || null,
-              check_out_location_name: 'Unnamed Location',
-              checkout_type: 'auto_checkout',
-            })
-            .eq('id', activeAttendance.id);
-
-        if (checkoutError) {
-          logger.warn('Failed to auto-checkout stale attendance:', checkoutError);
+      if (isAttendanceExpired(activeAttendance.check_in_time, now)) {
+        const expired = await expireAttendanceRecordIfNeeded(activeAttendance, now);
+        if (!expired) {
           return { success: true, data: activeAttendance as Attendance };
         }
 
         await this.clearLiveLocation(employeeId);
         logger.log(
-          `Auto-checked out employee ${employeeId} at ${autoCheckoutAt.toISOString()}`
+          `Auto-checked out employee ${employeeId} from current attendance lookup`
         );
         return { success: true, data: null };
       }
@@ -2137,21 +2233,19 @@ export const employeeApi = {
         return { success: false, error: 'Supabase is not configured' };
       }
 
-      // Check if already checked in (including stale records within 24 hours)
-      // First check if there's ANY active attendance record (even if stale)
-      const now = new Date();
-      const twentyFourHoursAgo = new Date(now.getTime() - 24 * 60 * 60 * 1000);
-
       const { data: existingAttendance } = await db.attendance
-        .select('id, check_in_time')
+        .select('id, employee_id, check_in_time, check_out_time, check_in_latitude, check_in_longitude, check_in_location_name')
         .eq('employee_id', employeeId)
         .is('check_out_time', null)
-        .gte('check_in_time', twentyFourHoursAgo.toISOString()) // Only check recent records
         .order('check_in_time', { ascending: false })
         .limit(1)
         .maybeSingle();
 
-      if (existingAttendance) {
+      const freshActiveAttendance = existingAttendance
+        ? await filterActiveAttendances([existingAttendance])
+        : [];
+
+      if (freshActiveAttendance.length > 0) {
         return { success: false, error: 'Already checked in. Please check out first.' };
       }
 
@@ -2473,7 +2567,9 @@ export const employeeApi = {
         check_out_location_name: record.check_out_time
           ? (record.check_out_location_name || formatLocationLabel(record.check_out_latitude, record.check_out_longitude))
           : undefined,
-        checkout_type: record.check_out_time ? (record.checkout_type || 'manual_checkout') : undefined,
+        checkout_type: record.check_out_time
+          ? (inferCheckoutType(record.check_in_time, record.check_out_time, record.checkout_type) || 'manual_checkout')
+          : undefined,
         site: record.site_id ? (sitesMap.get(record.site_id) || null) : null,
       }));
 
