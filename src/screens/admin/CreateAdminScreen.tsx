@@ -1,5 +1,5 @@
 import React, {useState, useRef} from 'react';
-import {View, StyleSheet, ScrollView, Alert} from 'react-native';
+import {View, StyleSheet, ScrollView, Alert, Platform} from 'react-native';
 import {Text, Card, TextInput, Button, useTheme} from 'react-native-paper';
 import {SafeAreaView} from 'react-native-safe-area-context';
 import {useForm, Controller} from 'react-hook-form';
@@ -26,7 +26,7 @@ type AdminFormData = z.infer<typeof adminSchema>;
 
 export const CreateAdminScreen: React.FC = () => {
   const theme = useTheme();
-  const navigation = useNavigation();
+  const navigation = useNavigation<any>();
   const queryClient = useQueryClient();
   const [showPassword, setShowPassword] = useState(false);
   const [selectedImageUri, setSelectedImageUri] = useState<string | null>(null);
@@ -83,6 +83,17 @@ export const CreateAdminScreen: React.FC = () => {
     uploadedImageUrlRef.current = null;
   };
 
+  const handleSuccessNavigation = () => {
+    reset();
+    setSelectedImageUri(null);
+    uploadedImageUrlRef.current = null;
+    if (navigation.canGoBack?.()) {
+      navigation.goBack();
+      return;
+    }
+    navigation.navigate('AdminDashboard');
+  };
+
   const createAdminMutation = useMutation({
     mutationFn: async (data: AdminFormData) => {
       const response = await adminApi.createAdmin({
@@ -101,13 +112,14 @@ export const CreateAdminScreen: React.FC = () => {
     onSuccess: async () => {
       await queryClient.invalidateQueries({queryKey: ['admin', 'dashboard']});
       await queryClient.refetchQueries({queryKey: ['admin', 'dashboard']});
+      if (Platform.OS === 'web') {
+        handleSuccessNavigation();
+        return;
+      }
       Alert.alert('Success', 'Admin created successfully', [
         {
           text: 'OK',
-          onPress: () => {
-            reset();
-            navigation.goBack();
-          },
+          onPress: handleSuccessNavigation,
         },
       ]);
     },

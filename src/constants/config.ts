@@ -1,27 +1,28 @@
 import {Platform} from 'react-native';
-import Constants from 'expo-constants';
+import {env, ENV_KEYS} from '../config/env';
 
-// Supabase Configuration - Read from Expo extra config or environment
-// In Expo, these come from app.config.js extra field or .env file
 export const getConfigValue = (key: string, defaultValue: string = ''): string => {
-  // Try Expo extra config first (works in Expo Go)
-  const expoValue = Constants.expoConfig?.extra?.[key];
-  if (expoValue && expoValue !== '' && expoValue !== defaultValue) {
-    return expoValue as string;
+  switch (key) {
+    case 'googleMapsApiKey':
+      return env.googleMapsApiKey || defaultValue;
+    case 'supabaseUrl':
+      return env.supabaseUrl || defaultValue;
+    case 'supabaseAnonKey':
+      return env.supabaseAnonKey || defaultValue;
+    case ENV_KEYS.googleMapsApiKey:
+      return env.googleMapsApiKey || defaultValue;
+    case ENV_KEYS.supabaseUrl:
+      return env.supabaseUrl || defaultValue;
+    case ENV_KEYS.supabaseAnonKey:
+      return env.supabaseAnonKey || defaultValue;
+    default:
+      return defaultValue;
   }
-  
-  // Fallback to process.env (for .env file in development)
-  const envValue = typeof process !== 'undefined' ? process.env?.[key] : undefined;
-  if (envValue && envValue !== '' && envValue !== defaultValue) {
-    return envValue as string;
-  }
-  
-  return defaultValue;
 };
 
-export const SUPABASE_URL = getConfigValue('supabaseUrl', 'https://placeholder.supabase.co');
-export const SUPABASE_ANON_KEY = getConfigValue('supabaseAnonKey', 'placeholder-key');
-export const GOOGLE_MAPS_API_KEY = getConfigValue('googleMapsApiKey', '');
+export const SUPABASE_URL = env.supabaseUrl;
+export const SUPABASE_ANON_KEY = env.supabaseAnonKey;
+export const GOOGLE_MAPS_API_KEY = env.googleMapsApiKey;
 
 // API Configuration
 export const API_BASE_URL = SUPABASE_URL || '';
@@ -35,16 +36,16 @@ export const IS_PRODUCTION = !__DEV__;
 export const IS_DEVELOPMENT = __DEV__;
 
 // GPS Configuration
-export const GPS_UPDATE_INTERVAL = 30000; // 30 seconds
-export const GPS_ACCURACY_BUFFER = 15; // 15 meters buffer for GPS accuracy tolerance only
-export const DEFAULT_GEOFENCE_RADIUS = 200; // meters
+export const GPS_UPDATE_INTERVAL = 30000;
+export const GPS_ACCURACY_BUFFER = 15;
+export const DEFAULT_GEOFENCE_RADIUS = 200;
 
 // Production optimizations
-export const QUERY_STALE_TIME = IS_PRODUCTION ? 5 * 60 * 1000 : 0; // 5 minutes in prod, 0 in dev
-export const QUERY_CACHE_TIME = 10 * 60 * 1000; // 10 minutes
+export const QUERY_STALE_TIME = IS_PRODUCTION ? 5 * 60 * 1000 : 0;
+export const QUERY_CACHE_TIME = 10 * 60 * 1000;
 
 // Image Configuration
-export const MAX_IMAGE_SIZE = 5 * 1024 * 1024; // 5MB
+export const MAX_IMAGE_SIZE = 5 * 1024 * 1024;
 export const IMAGE_COMPRESSION_QUALITY = 0.8;
 
 // Storage Buckets

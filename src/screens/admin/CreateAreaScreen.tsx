@@ -1,5 +1,5 @@
 import React from 'react';
-import {View, StyleSheet, ScrollView, Alert} from 'react-native';
+import {View, StyleSheet, ScrollView, Alert, Platform} from 'react-native';
 import {Text, Card, TextInput, Button, useTheme} from 'react-native-paper';
 import {SafeAreaView} from 'react-native-safe-area-context';
 import {useForm, Controller} from 'react-hook-form';
@@ -20,7 +20,7 @@ type AreaFormData = z.infer<typeof areaSchema>;
 
 export const CreateAreaScreen: React.FC = () => {
   const theme = useTheme();
-  const navigation = useNavigation();
+  const navigation = useNavigation<any>();
   const {currentUser} = useAuth();
   const queryClient = useQueryClient();
 
@@ -36,6 +36,15 @@ export const CreateAreaScreen: React.FC = () => {
       description: '',
     },
   });
+
+  const handleSuccessNavigation = () => {
+    reset();
+    if (navigation.canGoBack?.()) {
+      navigation.goBack();
+      return;
+    }
+    navigation.navigate('AllAreas');
+  };
 
   const createAreaMutation = useMutation({
     mutationFn: async (data: AreaFormData) => {
@@ -54,13 +63,14 @@ export const CreateAreaScreen: React.FC = () => {
     onSuccess: () => {
       queryClient.invalidateQueries({queryKey: ['admin', 'areas']});
       queryClient.invalidateQueries({queryKey: ['admin', 'dashboard']});
+      if (Platform.OS === 'web') {
+        handleSuccessNavigation();
+        return;
+      }
       Alert.alert('Success', 'Area created successfully', [
         {
           text: 'OK',
-          onPress: () => {
-            reset();
-            navigation.goBack();
-          },
+          onPress: handleSuccessNavigation,
         },
       ]);
     },

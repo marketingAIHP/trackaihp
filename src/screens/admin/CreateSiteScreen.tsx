@@ -1,5 +1,5 @@
 import React, {useState, useEffect, useRef} from 'react';
-import {View, StyleSheet, ScrollView, Alert} from 'react-native';
+import {View, StyleSheet, ScrollView, Alert, Platform} from 'react-native';
 import {Text, Card, TextInput, Button, useTheme} from 'react-native-paper';
 import {SafeAreaView} from 'react-native-safe-area-context';
 import {useForm, Controller} from 'react-hook-form';
@@ -132,14 +132,14 @@ export const CreateSiteScreen: React.FC = () => {
       await queryClient.invalidateQueries({queryKey: ['admin', 'dashboard']});
       await queryClient.refetchQueries({queryKey: ['admin', 'sites']});
       await queryClient.refetchQueries({queryKey: ['admin', 'dashboard']});
-      setSelectedImageUri(null); // Clear image state
+      if (Platform.OS === 'web') {
+        handleSuccessNavigation();
+        return;
+      }
       Alert.alert('Success', 'Site created successfully', [
         {
           text: 'OK',
-          onPress: () => {
-            reset();
-            navigation.goBack();
-          },
+          onPress: handleSuccessNavigation,
         },
       ]);
     },
@@ -182,6 +182,17 @@ export const CreateSiteScreen: React.FC = () => {
       uploadedImageUrlRef.current = null;
     }
     setSelectedImageUri(null);
+  };
+
+  const handleSuccessNavigation = () => {
+    reset();
+    setSelectedImageUri(null);
+    uploadedImageUrlRef.current = null;
+    if (navigation.canGoBack?.()) {
+      navigation.goBack();
+      return;
+    }
+    navigation.navigate('SiteManagement');
   };
 
   return (

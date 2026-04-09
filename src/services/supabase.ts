@@ -1,31 +1,13 @@
 import {createClient} from '@supabase/supabase-js';
-import {SUPABASE_URL, SUPABASE_ANON_KEY} from '../constants/config';
+import {env, envMessages, safeEnv} from '../config/env';
 import AsyncStorage from '@react-native-async-storage/async-storage';
 
 // =============================================================================
 // PERFORMANCE OPTIMIZATION: Supabase Client Configuration
 // =============================================================================
 
-// Validate Supabase configuration
-const supabaseUrl = SUPABASE_URL || '';
-const supabaseAnonKey = SUPABASE_ANON_KEY || '';
-
-// Check if configured (not placeholder values)
-const isConfigured =
-  supabaseUrl.length > 0 &&
-  supabaseUrl !== 'https://placeholder.supabase.co' &&
-  !supabaseUrl.includes('placeholder') &&
-  supabaseUrl.startsWith('https://') &&
-  supabaseAnonKey.length > 0 &&
-  supabaseAnonKey !== 'placeholder-key' &&
-  !supabaseAnonKey.includes('placeholder') &&
-  supabaseAnonKey.length > 20;
-
-// Create Supabase client
-const url = isConfigured ? supabaseUrl : 'https://placeholder.supabase.co';
-const key = isConfigured
-  ? supabaseAnonKey
-  : 'eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJpc3MiOiJzdXBhYmFzZSIsInJlZiI6InBsYWNlaG9sZGVyIiwicm9sZSI6ImFub24iLCJpYXQiOjE2NDUxOTIwMDAsImV4cCI6MTk2MDc2ODAwMH0.placeholder';
+const url = safeEnv.supabaseUrl;
+const key = safeEnv.supabaseAnonKey;
 
 // OPTIMIZATION: Create a SINGLE Supabase client instance with optimized settings
 // - Reduced timeout to 15s to fail fast and release connections
@@ -94,8 +76,11 @@ export const supabase = createClient(url, key, {
 });
 
 // Export configuration status and URL for debugging
-export const isSupabaseConfigured: boolean = isConfigured;
+export const isSupabaseConfigured: boolean = env.isSupabaseConfigured;
 export const supabaseUrlForDebug: string = url;
+export const supabaseConfigError: string | null = env.isSupabaseConfigured
+  ? null
+  : envMessages.missingSupabase;
 
 // =============================================================================
 // OPTIMIZATION: Database query helpers that reuse the single client
@@ -151,7 +136,7 @@ export function removeChannel(channelName: string): void {
  * Remove all active channels. Call on logout or app background.
  */
 export function removeAllChannels(): void {
-  activeChannels.forEach((channel, name) => {
+  activeChannels.forEach((channel) => {
     supabase.removeChannel(channel);
   });
   activeChannels.clear();

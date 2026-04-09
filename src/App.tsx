@@ -65,9 +65,8 @@ function AppContent() {
     // Validate environment variables
     const validation = validateEnvironment();
     if (!validation.isValid) {
-      setEnvError(
-        `Missing required environment variables: ${validation.missing.join(', ')}. Please check your configuration.`
-      );
+      logger.warn('[App] Missing public environment configuration', validation);
+      setEnvError(validation.message || 'App configuration is incomplete. Please check the Expo public environment variables.');
     }
 
     // Start app state monitoring for debugging

@@ -2,9 +2,9 @@ import 'dotenv/config';
 
 const getEnv = (...keys) => keys.map((key) => process.env[key]).find(Boolean) || '';
 
-const supabaseUrl = getEnv('SUPABASE_URL', 'EXPO_PUBLIC_SUPABASE_URL');
-const supabaseAnonKey = getEnv('SUPABASE_ANON_KEY', 'EXPO_PUBLIC_SUPABASE_ANON_KEY');
-const googleMapsApiKey = getEnv('GOOGLE_MAPS_API_KEY', 'EXPO_PUBLIC_GOOGLE_MAPS_API_KEY');
+const supabaseUrl = getEnv('EXPO_PUBLIC_SUPABASE_URL');
+const supabaseAnonKey = getEnv('EXPO_PUBLIC_SUPABASE_ANON_KEY');
+const googleMapsApiKey = getEnv('EXPO_PUBLIC_GOOGLE_MAPS_API_KEY');
 
 export default {
   expo: {
@@ -99,9 +99,9 @@ export default {
       // For Expo Go, maps will show a placeholder or use web maps
     ],
     extra: {
-      supabaseUrl,
-      supabaseAnonKey,
-      googleMapsApiKey,
+      EXPO_PUBLIC_SUPABASE_URL: supabaseUrl,
+      EXPO_PUBLIC_SUPABASE_ANON_KEY: supabaseAnonKey,
+      EXPO_PUBLIC_GOOGLE_MAPS_API_KEY: googleMapsApiKey,
       eas: {
         projectId: '0fb5aecb-8923-4ed3-a7b4-009652522764',
       },

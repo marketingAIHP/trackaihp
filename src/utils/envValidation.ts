@@ -1,4 +1,4 @@
-import {SUPABASE_URL, SUPABASE_ANON_KEY} from '../constants/config';
+import {env, envMessages} from '../config/env';
 
 /**
  * Validates that required environment variables are set
@@ -8,18 +8,10 @@ export function validateEnvironment(): {
   isValid: boolean;
   missing: string[];
   warnings: string[];
+  message?: string;
 } {
-  const missing: string[] = [];
+  const missing = [...env.missingRequiredKeys];
   const warnings: string[] = [];
-
-  // Required variables
-  if (!SUPABASE_URL || SUPABASE_URL === 'https://placeholder.supabase.co') {
-    missing.push('SUPABASE_URL');
-  }
-
-  if (!SUPABASE_ANON_KEY || SUPABASE_ANON_KEY === 'placeholder-key') {
-    missing.push('SUPABASE_ANON_KEY');
-  }
 
   // Optional but recommended
   // Add warnings for missing optional configs if needed
@@ -28,6 +20,10 @@ export function validateEnvironment(): {
     isValid: missing.length === 0,
     missing,
     warnings,
+    message:
+      missing.length > 0
+        ? `${envMessages.missingSupabase} Missing keys: ${missing.join(', ')}`
+        : undefined,
   };
 }
 

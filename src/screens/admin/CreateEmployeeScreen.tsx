@@ -1,5 +1,5 @@
 import React, {useState, useRef} from 'react';
-import {View, StyleSheet, ScrollView, Alert} from 'react-native';
+import {View, StyleSheet, ScrollView, Alert, Platform} from 'react-native';
 import {Text, Card, TextInput, Button, useTheme, Menu, Switch, Divider} from 'react-native-paper';
 import {SafeAreaView} from 'react-native-safe-area-context';
 import {useForm, Controller} from 'react-hook-form';
@@ -47,7 +47,7 @@ type EmployeeFormData = z.infer<typeof employeeSchema>;
 
 export const CreateEmployeeScreen: React.FC = () => {
   const theme = useTheme();
-  const navigation = useNavigation();
+  const navigation = useNavigation<any>();
   const {currentUser} = useAuth();
   const queryClient = useQueryClient();
   const [showPassword, setShowPassword] = useState(false);
@@ -94,6 +94,17 @@ export const CreateEmployeeScreen: React.FC = () => {
   const selectedSiteId = watch('site_id');
   const remoteWork = watch('remote_work') || false;
   const selectedSite = sites?.find((s) => s.id === selectedSiteId);
+
+  const handleSuccessNavigation = () => {
+    reset();
+    setSelectedImageUri(null);
+    uploadedImageUrlRef.current = null;
+    if (navigation.canGoBack?.()) {
+      navigation.goBack();
+      return;
+    }
+    navigation.navigate('EmployeeManagement');
+  };
 
   const handleImageSelect = async (uri: string | null) => {
     if (!uri) {
@@ -157,13 +168,14 @@ export const CreateEmployeeScreen: React.FC = () => {
       await queryClient.invalidateQueries({queryKey: ['admin', 'dashboard']});
       await queryClient.refetchQueries({queryKey: ['admin', 'employees']});
       await queryClient.refetchQueries({queryKey: ['admin', 'dashboard']});
+      if (Platform.OS === 'web') {
+        handleSuccessNavigation();
+        return;
+      }
       Alert.alert('Success', 'Employee created successfully', [
         {
           text: 'OK',
-          onPress: () => {
-            reset();
-            navigation.goBack();
-          },
+          onPress: handleSuccessNavigation,
         },
       ]);
     },

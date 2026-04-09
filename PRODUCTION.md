@@ -20,6 +20,9 @@ This guide will help you deploy AIHP CrewTrack to production.
    GOOGLE_MAPS_API_KEY=your-google-maps-api-key-here
    ```
 
+   This `.env` file is used for local development and web builds on your machine.
+   It is not uploaded automatically to EAS cloud builds for Android or iOS.
+
 2. **Get Supabase Credentials**:
    - Go to your Supabase project settings
    - Navigate to API settings
@@ -30,6 +33,16 @@ This guide will help you deploy AIHP CrewTrack to production.
    - Create a new project or select existing
    - Enable Maps SDK for Android/iOS
    - Create API key and restrict it
+
+4. **Set EAS environment variables for native builds**:
+   ```bash
+   eas env:create --name EXPO_PUBLIC_SUPABASE_URL --value https://your-project.supabase.co --environment production
+   eas env:create --name EXPO_PUBLIC_SUPABASE_ANON_KEY --value your-anon-key-here --environment production
+   eas env:create --name EXPO_PUBLIC_GOOGLE_MAPS_API_KEY --value your-google-maps-api-key-here --environment production
+   ```
+
+   Repeat for preview/development if you build those profiles too.
+   These `EXPO_PUBLIC_*` values are what Android and iOS cloud builds should rely on.
 
 ## Database Setup
 
