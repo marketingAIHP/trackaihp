@@ -380,9 +380,8 @@ const styles = StyleSheet.create({
   },
   mapAndLegendContainerWeb: {
     flex: 0,
-    flexDirection: 'row',
-    alignItems: 'flex-start',
-    gap: 20,
+    flexDirection: 'column',
+    alignItems: 'stretch',
     padding: 20,
   },
   mapSection: {
@@ -443,16 +442,17 @@ const styles = StyleSheet.create({
   },
   bottomInfoSectionWeb: {
     flex: 0,
-    width: 360,
+    width: '100%',
     borderWidth: 1,
     borderColor: '#e5e7eb',
     borderRadius: 16,
     paddingTop: 16,
-    minHeight: 460,
+    minHeight: 0,
     shadowColor: '#000',
     shadowOffset: { width: 0, height: 8 },
     shadowOpacity: 0.06,
     shadowRadius: 20,
+    marginTop: 16,
   },
   legendRow: {
     flexDirection: 'row',
