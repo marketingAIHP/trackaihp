@@ -1,445 +1,267 @@
-import React, { useEffect, useState, useCallback } from 'react';
-import { View, StyleSheet, ScrollView, Alert, Platform, useWindowDimensions } from 'react-native';
-import { Text, Card, Button, useTheme, ActivityIndicator } from 'react-native-paper';
-import { SafeAreaView } from 'react-native-safe-area-context';
-import { Image } from 'expo-image';
+import React, { useEffect, useMemo, useState } from 'react';
+import { Alert, Platform, ScrollView, StyleSheet, View, useWindowDimensions } from 'react-native';
+import { MaterialCommunityIcons as Icon } from '@expo/vector-icons';
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query';
+import { SafeAreaView } from 'react-native-safe-area-context';
+import { Button, Card, Chip, Divider, Text, useTheme } from 'react-native-paper';
 import { employeeApi } from '../../services/api';
 import { useAuth } from '../../hooks/useAuth';
-import { useLocation } from '../../hooks/useLocation';
-import { checkGeofence } from '../../utils/geofence';
-import { formatDistance } from '../../utils/format';
-import { LoadingSpinner } from '../../components/common/LoadingSpinner';
-import { MaterialCommunityIcons as Icon } from '@expo/vector-icons';
-import LocationTrackingService from '../../services/LocationTrackingService';
+import { AttendanceSession } from '../../types';
 
-// =============================================================================
-// PERFORMANCE OPTIMIZATION: Check-In/Out Screen
-// - Removed continuous location watching (unnecessary battery drain)
-// - Only fetch location when needed (on screen open and refresh)
-// - Use high accuracy only for check-in/out action
-// =============================================================================
+const IST_TIME_ZONE = 'Asia/Kolkata';
+const HALF_DAY_SECONDS = 4.5 * 60 * 60;
+
+function parseTime(value?: string | null): number | null {
+  if (!value) return null;
+  const time = new Date(value).getTime();
+  return Number.isFinite(time) ? time : null;
+}
+
+function formatDuration(totalSeconds: number): string {
+  const safeSeconds = Math.max(0, Math.floor(totalSeconds));
+  const hours = Math.floor(safeSeconds / 3600);
+  const minutes = Math.floor((safeSeconds % 3600) / 60);
+  const seconds = safeSeconds % 60;
+  return [hours, minutes, seconds].map((part) => String(part).padStart(2, '0')).join(':');
+}
+
+function formatIst(value?: string | null): string {
+  if (!value) return '--';
+  return new Intl.DateTimeFormat('en-IN', {
+    timeZone: IST_TIME_ZONE,
+    hour: '2-digit',
+    minute: '2-digit',
+    hour12: true,
+  }).format(new Date(value));
+}
+
+function sessionLabel(session?: AttendanceSession | null): string {
+  if (!session) return 'No active session';
+  return session.session_type === 'main_shift' ? 'Main shift' : 'Overtime';
+}
+
+function typeLabel(session: AttendanceSession): string {
+  if (session.attendance_type === 'full_day') return 'Full day';
+  if (session.attendance_type === 'half_day') return 'Half day';
+  if (session.attendance_type === 'overtime') return 'Overtime';
+  return session.status === 'checked_in' ? 'In progress' : 'Incomplete';
+}
 
 export const CheckInOutScreen: React.FC = () => {
   const theme = useTheme();
+  const queryClient = useQueryClient();
   const { currentUser } = useAuth();
   const employeeId = currentUser?.id || 0;
-  const queryClient = useQueryClient();
   const { width } = useWindowDimensions();
   const isWideWeb = Platform.OS === 'web' && width >= 768;
+  const [now, setNow] = useState(Date.now());
 
-  // OPTIMIZATION: Don't auto-start location watching
-  const {
-    coordinates,
-    loading: locationLoading,
-    getCurrentLocation,
-    watchLocation,
-    accuracy,
-    stopWatching,
-    error: locationError,
-    permissionGranted,
-  } = useLocation();
+  useEffect(() => {
+    const timer = setInterval(() => setNow(Date.now()), 1000);
+    return () => clearInterval(timer);
+  }, []);
 
-  // Local state for refresh action and check-in/out process
-  const [isRefreshing, setIsRefreshing] = useState(false);
-  const [isProcessingCheckInOut, setIsProcessingCheckInOut] = useState(false);
-
-  const { data: profile } = useQuery({
-    queryKey: ['employee', 'profile', employeeId],
+  const statusQuery = useQuery({
+    queryKey: ['employee', 'attendance-sessions', 'status', employeeId],
     queryFn: async () => {
-      const response = await employeeApi.getProfile(employeeId);
-      if (response.success && response.data) {
-        return response.data;
-      }
-      throw new Error(response.error || 'Failed to load profile');
+      const response = await employeeApi.getAttendanceStatus(employeeId);
+      if (response.success && response.data) return response.data;
+      throw new Error(response.error || 'Failed to load attendance status');
     },
     enabled: !!employeeId,
-    // OPTIMIZATION: Cache profile data longer
-    staleTime: 5 * 60 * 1000, // 5 minutes
+    refetchInterval: 30 * 1000,
   });
 
-  const { data: currentAttendance } = useQuery({
-    queryKey: ['employee', 'attendance', 'current', employeeId],
+  const summaryQuery = useQuery({
+    queryKey: ['employee', 'attendance-sessions', 'today-summary', employeeId],
     queryFn: async () => {
-      const response = await employeeApi.getCurrentAttendance(employeeId);
-      if (response.success) {
-        return response.data;
-      }
-      throw new Error(response.error || 'Failed to load attendance');
+      const response = await employeeApi.getTodaySummary(employeeId);
+      if (response.success && response.data) return response.data;
+      throw new Error(response.error || 'Failed to load today summary');
     },
     enabled: !!employeeId,
-    // OPTIMIZATION: Shorter stale time for attendance status
-    staleTime: 30 * 1000, // 30 seconds
+    refetchInterval: 30 * 1000,
   });
+
+  const invalidateAttendance = async () => {
+    await Promise.all([
+      queryClient.invalidateQueries({ queryKey: ['employee', 'attendance-sessions'] }),
+      queryClient.invalidateQueries({ queryKey: ['employee', 'attendance'] }),
+      queryClient.invalidateQueries({ queryKey: ['admin'] }),
+    ]);
+  };
 
   const checkInMutation = useMutation({
-    mutationFn: async (location: { latitude: number; longitude: number }) => {
-      if (!profile?.remote_work && !profile?.site_id) {
-        throw new Error('No assigned site');
-      }
-      const siteId = profile?.remote_work ? (profile?.site_id || null) : profile.site_id!;
-      const response = await employeeApi.checkIn(employeeId, siteId, location);
-      if (response.success && response.data) {
-        return response.data;
-      }
+    mutationFn: async () => {
+      const response = await employeeApi.checkInSession(employeeId);
+      if (response.success && response.data) return response.data;
       throw new Error(response.error || 'Check-in failed');
     },
-    onSuccess: async (data) => {
-      // Start live location tracking after successful check-in
-      const siteId = profile?.site_id || undefined;
-      const trackingResult = await LocationTrackingService.checkInEmployee(employeeId, siteId);
-      if (!trackingResult.success) {
-        Alert.alert('Tracking Error', trackingResult.error || 'Failed to start live tracking');
-      }
-
-      // OPTIMIZATION: Batch invalidations
-      await Promise.all([
-        queryClient.invalidateQueries({
-          queryKey: ['employee', 'attendance'],
-        }),
-        queryClient.invalidateQueries({ queryKey: ['admin'] }),
-      ]);
-
-      Alert.alert('Success', 'Checked in successfully. Your location will be tracked while on duty.');
+    onSuccess: async () => {
+      await invalidateAttendance();
     },
-    onError: (error: any) => {
-      Alert.alert('Error', error.message || 'Check-in failed');
-    },
+    onError: (error: any) => Alert.alert('Check-in blocked', error.message || 'Check-in failed'),
   });
 
   const checkOutMutation = useMutation({
-    mutationFn: async (location: { latitude: number; longitude: number }) => {
-      if (!currentAttendance) {
-        throw new Error('No active attendance');
-      }
-      const response = await employeeApi.checkOut(
-        employeeId,
-        currentAttendance.id,
-        location
-      );
-      if (response.success && response.data) {
-        return response.data;
-      }
+    mutationFn: async () => {
+      const response = await employeeApi.checkOutSession(employeeId);
+      if (response.success && response.data) return response.data;
       throw new Error(response.error || 'Check-out failed');
     },
-    onSuccess: async (data) => {
-      // Stop live location tracking after check-out
-      await LocationTrackingService.checkOutEmployee();
-
-      // OPTIMIZATION: Batch invalidations
-      await Promise.all([
-        queryClient.invalidateQueries({
-          queryKey: ['employee', 'attendance'],
-        }),
-        queryClient.invalidateQueries({ queryKey: ['admin'] }),
-      ]);
-
-      Alert.alert('Success', 'Checked out successfully. Location tracking stopped.');
+    onSuccess: async () => {
+      await invalidateAttendance();
     },
-    onError: (error: any) => {
-      Alert.alert('Error', error.message || 'Check-out failed');
-    },
+    onError: (error: any) => Alert.alert('Check-out blocked', error.message || 'Check-out failed'),
   });
 
-  const isCheckedIn = !!currentAttendance;
-  const assignedSite = profile?.site;
+  const activeSession = statusQuery.data?.active_session || null;
+  const autoCheckoutAt = parseTime(statusQuery.data?.auto_checkout_time);
+  const checkoutEnabledAt = parseTime(statusQuery.data?.checkout_enabled_at);
+  const activeCheckInAt = parseTime(activeSession?.check_in_time);
+  const hasActiveSession = Boolean(activeSession);
 
-  // OPTIMIZATION: Cleanup location watching on unmount
-  useEffect(() => {
-    const cleanup = watchLocation(() => {});
+  const elapsedCurrentSessionSeconds = useMemo(() => {
+    if (!activeSession || !activeCheckInAt) return 0;
+    return (now - activeCheckInAt) / 1000;
+  }, [activeSession, activeCheckInAt, now]);
 
-    return () => {
-      cleanup?.();
-      stopWatching();
-    };
-  }, [stopWatching, watchLocation]);
+  const remainingAutoCheckoutSeconds = useMemo(() => {
+    if (!autoCheckoutAt) return 0;
+    return (autoCheckoutAt - now) / 1000;
+  }, [autoCheckoutAt, now]);
 
-  // Resume live tracking if already checked in (e.g., after app restart or background)
-  useEffect(() => {
-    // Try to restore UI state based on actual tracking status
-    // The LocationTrackingService handles the persistence
-  }, []);
+  const checkoutLockedSeconds = useMemo(() => {
+    if (!checkoutEnabledAt) return 0;
+    return (checkoutEnabledAt - now) / 1000;
+  }, [checkoutEnabledAt, now]);
 
-  // NOTE: We no longer force a location update on every screen focus.
-  // The LocationTrackingService's AppState listener handles foreground re-entry.
-  // Calling forceOneTimeUpdate() on every focus caused duplicate inserts on tab switches.
+  const activeSessionWorkedSeconds = activeSession
+    ? Math.max(0, elapsedCurrentSessionSeconds)
+    : 0;
+  const serverTime = parseTime(summaryQuery.data?.server_time);
+  const completedWorkedSeconds = Math.max(0, summaryQuery.data?.total_worked_seconds || 0);
+  const totalWorkedSeconds = completedWorkedSeconds + (activeSession && serverTime ? Math.max(0, (now - serverTime) / 1000) : 0);
 
-  // Handle refresh button
-  const handleRefresh = useCallback(async () => {
-    setIsRefreshing(true);
-    await getCurrentLocation({
-      preferCached: false,
-      targetAccuracy: 20,
-      timeoutMs: 15000,
-    });
-    setIsRefreshing(false);
-  }, [getCurrentLocation]);
+  const canCheckIn = !hasActiveSession && !checkInMutation.isPending && !checkOutMutation.isPending;
+  const canCheckOut =
+    activeSession?.session_type === 'main_shift' &&
+    activeSessionWorkedSeconds >= HALF_DAY_SECONDS &&
+    !checkInMutation.isPending &&
+    !checkOutMutation.isPending;
 
-  // Handle check-in/out with fresh high-accuracy location
-  const handleCheckInOut = useCallback(async () => {
-    // Prevent multiple clicks
-    if (isProcessingCheckInOut || checkInMutation.isPending || checkOutMutation.isPending) {
-      return;
-    }
-
-    setIsProcessingCheckInOut(true);
-
-    try {
-      // OPTIMIZATION: Get fresh high-accuracy location for check-in/out
-      // This is the critical moment where accuracy matters
-      const freshLocation = await getCurrentLocation({
-        preferCached: false,
-        targetAccuracy: 20,
-        timeoutMs: 15000,
-      });
-
-      if (!freshLocation) {
-        Alert.alert('Error', 'Location not available. Please enable location services and try again.');
-        setIsProcessingCheckInOut(false);
-        return;
-      }
-
-      // Check if remote work is enabled
-      if (profile?.remote_work) {
-        // Remote work: allow check-in/out from anywhere
-        if (isCheckedIn) {
-          checkOutMutation.mutate(freshLocation, {
-            onSettled: () => setIsProcessingCheckInOut(false),
-          });
-        } else {
-          checkInMutation.mutate(freshLocation, {
-            onSettled: () => setIsProcessingCheckInOut(false),
-          });
-        }
-        return;
-      }
-
-      // Regular work: require site assignment and geofence validation
-      if (!assignedSite) {
-        Alert.alert('Error', 'No assigned work site. Please contact administrator.');
-        setIsProcessingCheckInOut(false);
-        return;
-      }
-
-      const geofenceStatus = checkGeofence(freshLocation, assignedSite);
-      if (!geofenceStatus.isWithinGeofence) {
-        const actionLabel = isCheckedIn ? 'check out' : 'check in';
-        Alert.alert(
-          'Outside assigned site',
-          `You must be within the assigned site radius to ${actionLabel}. Current distance: ${formatDistance(geofenceStatus.distance)}. Allowed radius: ${formatDistance(geofenceStatus.geofenceRadius)}.`
-        );
-        setIsProcessingCheckInOut(false);
-        return;
-      }
-
-      if (isCheckedIn) {
-        checkOutMutation.mutate(freshLocation, {
-          onSettled: () => setIsProcessingCheckInOut(false),
-        });
-        return;
-      }
-
-      checkInMutation.mutate(freshLocation, {
-        onSettled: () => setIsProcessingCheckInOut(false),
-      });
-    } catch (error) {
-      setIsProcessingCheckInOut(false);
-      Alert.alert('Error', 'An error occurred. Please try again.');
-    }
-  }, [
-    getCurrentLocation,
-    profile?.remote_work,
-    assignedSite,
-    isCheckedIn,
-    checkInMutation,
-    checkOutMutation,
-    isProcessingCheckInOut,
-  ]);
-
-  if (locationLoading && !coordinates) {
-    return (
-      <SafeAreaView style={styles.container} edges={['top']}>
-        <LoadingSpinner />
-        <Text style={styles.loadingText}>Getting your location...</Text>
-      </SafeAreaView>
-    );
-  }
+  const isLoading = statusQuery.isLoading || summaryQuery.isLoading;
 
   return (
     <SafeAreaView style={[styles.container, { backgroundColor: theme.colors.background }]} edges={['top']}>
-      <ScrollView
-        style={styles.scrollView}
-        contentContainerStyle={styles.scrollContent}>
+      <ScrollView style={styles.scrollView} contentContainerStyle={styles.scrollContent}>
         <View style={[styles.content, isWideWeb && styles.webContent]}>
-          <Card style={styles.locationCard}>
+          <Card style={styles.statusCard}>
             <Card.Content>
-              <View style={styles.locationHeader}>
-                <Text variant="titleMedium" style={styles.sectionTitle}>
-                  Current Location
-                </Text>
-                <Button
-                  mode="outlined"
-                  compact
-                  onPress={handleRefresh}
-                  loading={isRefreshing}
-                  icon="refresh">
-                  Refresh
-                </Button>
-              </View>
-              {coordinates ? (
+              <View style={styles.headerRow}>
                 <View>
-                  <Text variant="bodyMedium">
-                    Latitude: {coordinates.latitude.toFixed(6)}
-                  </Text>
-                  <Text variant="bodyMedium">
-                    Longitude: {coordinates.longitude.toFixed(6)}
-                  </Text>
-                  {accuracy !== null && (
-                    <Text variant="bodySmall" style={styles.accuracyText}>
-                      GPS Accuracy: {Math.round(accuracy)}m {accuracy <= 20 ? '✓' : accuracy <= 50 ? '~' : '⚠'}
-                    </Text>
-                  )}
+                  <Text variant="titleLarge" style={styles.title}>Attendance</Text>
+                  <Text variant="bodyMedium" style={styles.muted}>IST day ends at 12:00 AM</Text>
                 </View>
-              ) : (
-                <Text variant="bodyMedium" style={styles.errorText}>
-                  Location not available
-                </Text>
-              )}
-              {locationError ? (
-                <Text variant="bodySmall" style={styles.locationHelpText}>
-                  {locationError}
-                  {Platform.OS === 'web'
-                    ? ' Enable browser location access and keep the PWA on HTTPS.'
-                    : ''}
-                </Text>
-              ) : null}
-              {permissionGranted === false ? (
-                <Text variant="bodySmall" style={styles.locationHelpText}>
-                  Permission is required before check-in and check-out can continue.
-                </Text>
+                <Chip icon={hasActiveSession ? 'timer-sand' : 'check-circle-outline'}>
+                  {sessionLabel(activeSession)}
+                </Chip>
+              </View>
+
+              <View style={styles.metricGrid}>
+                <View style={styles.metric}>
+                  <Icon name="clock-check-outline" size={24} color={theme.colors.primary} />
+                  <Text variant="labelMedium" style={styles.muted}>Total today</Text>
+                  <Text variant="headlineSmall" style={styles.metricValue}>
+                    {formatDuration(totalWorkedSeconds)}
+                  </Text>
+                </View>
+                <View style={styles.metric}>
+                  <Icon name="timer-outline" size={24} color={theme.colors.primary} />
+                  <Text variant="labelMedium" style={styles.muted}>Current session</Text>
+                  <Text variant="headlineSmall" style={styles.metricValue}>
+                    {formatDuration(activeSessionWorkedSeconds)}
+                  </Text>
+                </View>
+                <View style={styles.metric}>
+                  <Icon name="timer-sand" size={24} color={theme.colors.primary} />
+                  <Text variant="labelMedium" style={styles.muted}>Auto checkout in</Text>
+                  <Text variant="headlineSmall" style={styles.metricValue}>
+                    {hasActiveSession ? formatDuration(remainingAutoCheckoutSeconds) : '--:--:--'}
+                  </Text>
+                </View>
+              </View>
+
+              {activeSession ? (
+                <View style={styles.activeDetails}>
+                  <Divider style={styles.divider} />
+                  <Text variant="bodyMedium">Checked in: {formatIst(activeSession.check_in_time)}</Text>
+                  <Text variant="bodyMedium">Auto checkout: {formatIst(statusQuery.data?.auto_checkout_time)}</Text>
+                  {activeSession.session_type === 'main_shift' && !canCheckOut ? (
+                    <Text variant="bodySmall" style={styles.warningText}>
+                      Manual checkout unlocks in {formatDuration(checkoutLockedSeconds)}
+                    </Text>
+                  ) : null}
+                  {activeSession.session_type === 'overtime' ? (
+                    <Text variant="bodySmall" style={styles.warningText}>
+                      Overtime sessions auto-check out after 2 hours or at midnight.
+                    </Text>
+                  ) : null}
+                </View>
               ) : null}
             </Card.Content>
           </Card>
 
-          {profile?.remote_work ? (
-            <Card style={styles.geofenceCard}>
-              <Card.Content>
-                <View style={styles.remoteWorkInfo}>
-                  <Icon name="home" size={32} color={theme.colors.primary} />
-                  <View style={styles.remoteWorkText}>
-                    <Text variant="titleMedium" style={styles.remoteWorkTitle}>
-                      Remote Work Enabled
-                    </Text>
-                    <Text variant="bodyMedium" style={styles.remoteWorkDescription}>
-                      You can check in/out from any location
-                    </Text>
-                  </View>
-                </View>
-              </Card.Content>
-            </Card>
-          ) : (
-            assignedSite && coordinates && (() => {
-              const geofenceStatus = checkGeofence(coordinates, assignedSite);
-              return (
-                <>
-                  <Card style={styles.geofenceCard}>
-                    <Card.Content>
-                      <Text variant="titleMedium" style={styles.sectionTitle}>
-                        Site Information
-                      </Text>
-                      {assignedSite.site_image ? (
-                        <Image
-                          source={{ uri: assignedSite.site_image }}
-                          style={styles.siteImage}
-                          contentFit="cover"
-                          transition={200}
-                        />
-                      ) : (
-                        <View style={[styles.siteImagePlaceholder, { backgroundColor: theme.colors.surfaceVariant }]}>
-                          <Icon name="map-marker" size={48} color={theme.colors.primary} />
-                        </View>
-                      )}
-                      <Text variant="bodyLarge" style={styles.siteName}>
-                        {assignedSite.name}
-                      </Text>
-                      <Text variant="bodyMedium" style={styles.siteAddress}>
-                        {assignedSite.address}
-                      </Text>
-                    </Card.Content>
-                  </Card>
+          <View style={styles.buttonRow}>
+            <Button
+              mode="contained"
+              icon="login"
+              disabled={!canCheckIn || isLoading}
+              loading={checkInMutation.isPending}
+              onPress={() => checkInMutation.mutate()}
+              style={styles.actionButton}>
+              Check In
+            </Button>
+            <Button
+              mode="contained-tonal"
+              icon="logout"
+              disabled={!canCheckOut || isLoading}
+              loading={checkOutMutation.isPending}
+              onPress={() => checkOutMutation.mutate()}
+              style={styles.actionButton}>
+              Check Out
+            </Button>
+          </View>
 
-                  <Card style={[
-                    styles.statusCard,
-                    {
-                      backgroundColor: geofenceStatus.isWithinGeofence
-                        ? theme.colors.tertiaryContainer
-                        : theme.colors.errorContainer,
-                    }
-                  ]}>
-                    <Card.Content>
-                      <View style={styles.statusContainer}>
+          <Card style={styles.sessionsCard}>
+            <Card.Content>
+              <Text variant="titleMedium" style={styles.sectionTitle}>Today Sessions</Text>
+              {(summaryQuery.data?.sessions || []).length === 0 ? (
+                <Text variant="bodyMedium" style={styles.emptyText}>No sessions today</Text>
+              ) : (
+                (summaryQuery.data?.sessions || []).map((session) => {
+                  return (
+                    <View key={session.id} style={styles.sessionRow}>
+                      <View style={styles.sessionIcon}>
                         <Icon
-                          name={geofenceStatus.isWithinGeofence ? 'check-circle' : 'alert-circle'}
-                          size={24}
-                          color={
-                            geofenceStatus.isWithinGeofence
-                              ? theme.colors.tertiary
-                              : theme.colors.error
-                          }
+                          name={session.session_type === 'main_shift' ? 'briefcase-clock-outline' : 'clock-plus-outline'}
+                          size={22}
+                          color={theme.colors.primary}
                         />
-                        <View style={styles.statusTextContainer}>
-                          <Text variant="bodyMedium" style={[
-                            styles.statusText,
-                            {
-                              color: geofenceStatus.isWithinGeofence
-                                ? theme.colors.tertiary
-                                : theme.colors.error,
-                            }
-                          ]}>
-                            {geofenceStatus.isWithinGeofence
-                              ? `Within radius (${formatDistance(geofenceStatus.distance)} / ${formatDistance(geofenceStatus.geofenceRadius)})`
-                              : `Outside radius (${formatDistance(geofenceStatus.distance)} / ${formatDistance(geofenceStatus.geofenceRadius)})`}
-                          </Text>
-                        </View>
                       </View>
-                    </Card.Content>
-                  </Card>
-                </>
-              );
-            })()
-          )}
-
-          {(() => {
-            // Determine if button should be disabled
-            const isLoading = isProcessingCheckInOut || checkInMutation.isPending || checkOutMutation.isPending;
-            let isDisabled = !coordinates || isLoading;
-
-            if (!profile?.remote_work && !assignedSite) {
-              isDisabled = true;
-            }
-
-            // Button text
-            let buttonText = isCheckedIn ? 'Check Out' : 'Check In';
-            if (isLoading) {
-              buttonText = isProcessingCheckInOut && !checkInMutation.isPending && !checkOutMutation.isPending
-                ? 'Getting Location...'
-                : (isCheckedIn ? 'Checking Out...' : 'Checking In...');
-            }
-
-            return (
-              <>
-                <Button
-                  mode="contained"
-                  onPress={handleCheckInOut}
-                  loading={isLoading}
-                  disabled={isDisabled}
-                  style={styles.checkButton}
-                  buttonColor={isCheckedIn ? theme.colors.error : theme.colors.primary}>
-                  {buttonText}
-                </Button>
-              </>
-            );
-          })()}
+                      <View style={styles.sessionBody}>
+                        <Text variant="titleSmall">{sessionLabel(session)}</Text>
+                        <Text variant="bodySmall" style={styles.muted}>
+                          {formatIst(session.check_in_time)} - {session.check_out_time ? formatIst(session.check_out_time) : 'Active'}
+                        </Text>
+                      </View>
+                      <Chip compact>{session.status === 'auto_checked_out' ? 'Auto' : typeLabel(session)}</Chip>
+                    </View>
+                  );
+                })
+              )}
+            </Card.Content>
+          </Card>
         </View>
       </ScrollView>
     </SafeAreaView>
@@ -458,6 +280,7 @@ const styles = StyleSheet.create({
   },
   content: {
     padding: 16,
+    gap: 16,
   },
   webContent: {
     width: '100%',
@@ -466,91 +289,89 @@ const styles = StyleSheet.create({
     paddingHorizontal: 24,
     paddingVertical: 24,
   },
-  locationCard: {
-    marginBottom: 16,
+  statusCard: {
+    borderRadius: 8,
   },
-  locationHeader: {
+  sessionsCard: {
+    borderRadius: 8,
+  },
+  headerRow: {
     flexDirection: 'row',
     justifyContent: 'space-between',
     alignItems: 'center',
-    marginBottom: 12,
+    gap: 12,
+    marginBottom: 18,
+  },
+  title: {
+    fontWeight: '700',
   },
   sectionTitle: {
-    fontWeight: '600',
+    fontWeight: '700',
+    marginBottom: 8,
   },
-  errorText: {
+  muted: {
     opacity: 0.7,
   },
-  accuracyText: {
-    marginTop: 8,
-    opacity: 0.7,
-    fontStyle: 'italic',
+  metricGrid: {
+    flexDirection: 'row',
+    flexWrap: 'wrap',
+    gap: 12,
   },
-  locationHelpText: {
-    marginTop: 8,
+  metric: {
+    flexGrow: 1,
+    flexBasis: 220,
+    minHeight: 116,
+    borderRadius: 8,
+    borderWidth: StyleSheet.hairlineWidth,
+    borderColor: 'rgba(120,120,120,0.35)',
+    padding: 14,
+    justifyContent: 'space-between',
+  },
+  metricValue: {
+    fontWeight: '700',
+  },
+  activeDetails: {
+    marginTop: 4,
+    gap: 6,
+  },
+  divider: {
+    marginVertical: 12,
+  },
+  warningText: {
+    marginTop: 4,
     opacity: 0.75,
   },
-  geofenceCard: {
-    marginBottom: 16,
+  buttonRow: {
+    flexDirection: 'row',
+    gap: 12,
   },
-  siteImage: {
-    width: '100%',
-    height: 200,
+  actionButton: {
+    flex: 1,
     borderRadius: 8,
-    marginBottom: 12,
-    backgroundColor: '#f0f0f0',
   },
-  siteImagePlaceholder: {
-    width: '100%',
-    height: 200,
+  emptyText: {
+    paddingVertical: 12,
+    opacity: 0.7,
+  },
+  sessionRow: {
+    minHeight: 64,
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: 12,
+    paddingVertical: 10,
+    borderBottomWidth: StyleSheet.hairlineWidth,
+    borderBottomColor: 'rgba(120,120,120,0.25)',
+  },
+  sessionIcon: {
+    width: 36,
+    height: 36,
     borderRadius: 8,
-    marginBottom: 12,
+    alignItems: 'center',
     justifyContent: 'center',
-    alignItems: 'center',
+    backgroundColor: 'rgba(80,120,160,0.12)',
   },
-  statusCard: {
-    marginBottom: 16,
-  },
-  statusContainer: {
-    flexDirection: 'row',
-    alignItems: 'center',
-  },
-  statusTextContainer: {
+  sessionBody: {
     flex: 1,
-    marginLeft: 12,
-  },
-  statusText: {
-    fontWeight: '600',
-  },
-  siteName: {
-    fontWeight: '600',
-    marginBottom: 4,
-  },
-  siteAddress: {
-    opacity: 0.7,
-    marginBottom: 12,
-  },
-  checkButton: {
-    marginTop: 8,
-    paddingVertical: 8,
-  },
-  loadingText: {
-    textAlign: 'center',
-    marginTop: 16,
-  },
-  remoteWorkInfo: {
-    flexDirection: 'row',
-    alignItems: 'center',
-  },
-  remoteWorkText: {
-    flex: 1,
-    marginLeft: 16,
-  },
-  remoteWorkTitle: {
-    fontWeight: '600',
-    marginBottom: 4,
-  },
-  remoteWorkDescription: {
-    opacity: 0.7,
+    minWidth: 0,
   },
 });

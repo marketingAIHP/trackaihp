@@ -96,6 +96,7 @@ export const db = {
   get work_sites() { return supabase.from('work_sites'); },
   get location_tracking() { return supabase.from('location_tracking'); },
   get attendance() { return supabase.from('attendance'); },
+  get attendance_sessions() { return supabase.from('attendance_sessions'); },
   get notifications() { return supabase.from('notifications'); },
 };
 

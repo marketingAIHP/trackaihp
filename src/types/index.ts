@@ -73,6 +73,9 @@ export interface WorkSite {
 
 export type CheckoutType = 'manual_checkout' | 'auto_checkout';
 export type AttendanceStatusFilter = 'all' | 'on_site' | 'checked_out' | 'remote_work';
+export type AttendanceSessionType = 'main_shift' | 'overtime';
+export type AttendanceSessionStatus = 'checked_in' | 'checked_out' | 'auto_checked_out';
+export type AttendanceType = 'half_day' | 'full_day' | 'overtime';
 
 export interface LocationTracking {
   id: number;
@@ -103,6 +106,34 @@ export interface Attendance {
   is_remote_location?: boolean;
   employee?: Employee;
   site?: WorkSite;
+}
+
+export interface AttendanceSession {
+  id: number;
+  employee_id: number;
+  session_type: AttendanceSessionType;
+  check_in_time: string;
+  check_out_time?: string | null;
+  status: AttendanceSessionStatus;
+  attendance_type?: AttendanceType | null;
+  created_at: string;
+}
+
+export interface AttendanceStatus {
+  active_session: AttendanceSession | null;
+  auto_checkout_time: string | null;
+  checkout_enabled_at: string | null;
+  server_time: string;
+  day_start: string;
+  day_end: string;
+}
+
+export interface TodayAttendanceSummary {
+  server_time: string;
+  day_start: string;
+  day_end: string;
+  total_worked_seconds: number;
+  sessions: AttendanceSession[];
 }
 
 export interface Notification {

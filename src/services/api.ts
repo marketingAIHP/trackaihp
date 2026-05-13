@@ -15,13 +15,16 @@ import {
   ApiResponse,
   AttendanceReportFilters,
   AttendanceReportRecord,
+  AttendanceSession,
+  AttendanceStatus,
+  TodayAttendanceSummary,
   CheckoutType,
   SiteAttendanceSummary,
 } from '../types';
 import { STORAGE_BUCKETS } from '../constants/config';
 import { deleteImage } from '../utils/storage';
 import { checkGeofence } from '../utils/geofence';
-import { hashPassword, comparePassword } from '../utils/password';
+import { hashPassword } from '../utils/password';
 import { logger } from '../utils/logger';
 
 // Helper function to parse timestamps with proper UTC handling
@@ -267,200 +270,101 @@ async function validateAttendanceGeofence(
   };
 }
 
-// Helper function to handle employee login result
-async function handleEmployeeLoginResult(
-  result: { data: any; error: any },
-  password: string
-): Promise<ApiResponse<{ employee: Employee; token: string }>> {
-  const { data, error } = result;
-
-  if (error) {
-    // Table doesn't exist - need to run migrations
-    if (error.code === '42P01' || error.message?.includes('relation') || error.message?.includes('does not exist')) {
-      return {
-        success: false,
-        error: 'Database tables not found. Please run migrations in Supabase SQL Editor. See QUICK_START.md for details.'
-      };
-    }
-
-    // Network/connection error
-    if (error.message?.includes('Failed to fetch') || error.message?.includes('Network') || error.message?.includes('Network request failed') || error.message?.includes('TypeError') || (error as any).name === 'TypeError') {
-      return {
-        success: false,
-        error: 'Cannot connect to Supabase. Please check your internet connection and verify the Supabase project is active.'
-      };
-    }
-
-    // RLS policy violation
-    if (error.message?.includes('row-level security policy') || error.message?.includes('RLS') || error.code === '42501') {
-      return {
-        success: false,
-        error: 'Database security policy error. The employees table may have RLS enabled. Please ensure there is a policy that allows public read access for login.'
-      };
-    }
-
-    return { success: false, error: 'Login failed. Please check your credentials and try again.' };
-  }
-
-  if (!data) {
-    return {
-      success: false,
-      error: 'No account found with this email. Please verify the email is correct or contact your administrator.'
-    };
-  }
-
-  // Validate password parameter
-  if (!password || typeof password !== 'string' || password.length === 0) {
-    return { success: false, error: 'Invalid password provided' };
-  }
-
-  // Verify password (handle both hashed and plain text for migration)
-  const storedPassword = data.password || '';
-  let passwordValid = false;
-
-  // Check if password is hashed (bcrypt hashes start with $2a$, $2b$, or $2y$)
-  if (storedPassword && typeof storedPassword === 'string' && (storedPassword.startsWith('$2a$') || storedPassword.startsWith('$2b$') || storedPassword.startsWith('$2y$'))) {
-    passwordValid = await comparePassword(password, storedPassword);
-  } else {
-    // Legacy plain text password (for migration purposes)
-    passwordValid = password === storedPassword;
-
-    // If login successful with plain text, hash and update it
-    if (passwordValid) {
-      try {
-        // Ensure password is a valid string before hashing
-        if (password && typeof password === 'string' && password.trim().length > 0) {
-          try {
-            // Create a fresh string copy to ensure it's a proper string
-            const passwordToHash = String(password).trim();
-
-            // Pass to hashPassword
-            const hashedPassword = await hashPassword(passwordToHash);
-            await db.employees.update({ password: hashedPassword }).eq('id', data.id);
-          } catch (hashError: any) {
-            // Silently fail - don't fail login if hashing fails
-          }
-        }
-      } catch (hashError: any) {
-        // Silently fail - don't fail login if hashing fails
-      }
-    }
-  }
-
-  if (!passwordValid) {
-    return { success: false, error: 'Invalid password. Please check your password and try again.' };
-  }
-
-  if (!data.is_active) {
-    return { success: false, error: 'Account is not active. Please contact administrator.' };
-  }
-
-  const token = 'mock-token';
-  return { success: true, data: { employee: data as Employee, token } };
-}
-
-// Helper function to handle admin login result
-async function handleAdminLoginResult(
-  result: { data: any; error: any },
-  password: string
-): Promise<ApiResponse<{ admin: Admin; token: string }>> {
-  const { data, error } = result;
-
-  if (error) {
-    // Table doesn't exist - need to run migrations
-    if (error.code === '42P01' || error.message?.includes('relation') || error.message?.includes('does not exist')) {
-      return {
-        success: false,
-        error: 'Database tables not found. Please run migrations in Supabase SQL Editor. See QUICK_START.md for details.'
-      };
-    }
-
-    // Network/connection error
-    if (error.message?.includes('Failed to fetch') || error.message?.includes('Network') || error.message?.includes('Network request failed') || error.message?.includes('TypeError') || (error as any).name === 'TypeError') {
-      return {
-        success: false,
-        error: 'Cannot connect to Supabase. Please check your internet connection and verify the Supabase project is active.'
-      };
-    }
-
-    // RLS policy violation - provide specific guidance
-    if (error.message?.includes('row-level security policy') || error.message?.includes('RLS') || error.code === '42501') {
-      return {
-        success: false,
-        error: 'Database security policy error. The admins table may have RLS enabled. Please ensure there is a policy that allows public read access for login. Run this SQL in Supabase: CREATE POLICY "Allow public read for login" ON admins FOR SELECT USING (true);'
-      };
-    }
-
-    // Log the actual error for debugging (in development)
-    return { success: false, error: 'Login failed. Please check your credentials and try again.' };
-  }
-
-  if (!data) {
-    // Admin not found - provide helpful message
-    return {
-      success: false,
-      error: 'No account found with this email. Please verify the email is correct or sign up as a new admin.'
-    };
-  }
-
-  // Validate password parameter
-  if (!password || typeof password !== 'string' || password.length === 0) {
-    return { success: false, error: 'Invalid password provided' };
-  }
-
-  // Verify password (handle both hashed and plain text for migration)
-  const storedPassword = data.password || '';
-  let passwordValid = false;
-
-  // Check if password is hashed (bcrypt hashes start with $2a$, $2b$, or $2y$)
-  if (storedPassword && typeof storedPassword === 'string' && (storedPassword.startsWith('$2a$') || storedPassword.startsWith('$2b$') || storedPassword.startsWith('$2y$'))) {
-    passwordValid = await comparePassword(password, storedPassword);
-  } else {
-    // Legacy plain text password (for migration purposes)
-    passwordValid = password === storedPassword;
-
-    // If login successful with plain text, hash and update it
-    if (passwordValid) {
-      try {
-        // Ensure password is a valid string before hashing
-        if (password && typeof password === 'string' && password.trim().length > 0) {
-          try {
-            // Create a fresh string copy to ensure it's a proper string
-            const passwordToHash = String(password).trim();
-
-            // Pass to hashPassword
-            const hashedPassword = await hashPassword(passwordToHash);
-            await db.admins.update({ password: hashedPassword }).eq('id', data.id);
-          } catch (hashError: any) {
-            // Silently fail - don't fail login if hashing fails
-          }
-        }
-      } catch (hashError: any) {
-        // Silently fail - don't fail login if hashing fails
-      }
-    }
-  }
-
-  if (!passwordValid) {
-    return { success: false, error: 'Invalid password. Please check your password and try again.' };
-  }
-
-  if (!data.is_verified) {
-    return { success: false, error: 'Email not verified. Please verify your email first.' };
-  }
-
-  if (!data.is_active) {
-    return { success: false, error: 'Account is not active. Please contact administrator.' };
-  }
-
-  const token = 'mock-token';
-  return { success: true, data: { admin: data as Admin, token } };
-}
+// Legacy direct-table password login helpers were removed intentionally.
+// Authentication must flow through Edge Functions / Supabase Auth.
 
 // Authentication API
 export const authApi = {
   // Admin login
   async adminLogin(email: string, password: string): Promise<ApiResponse<{ admin: Admin; token: string }>> {
+    const secureAdminAuthFallback = async (): Promise<ApiResponse<{ admin: Admin; token: string }>> => {
+      const normalizedEmail = email.trim().toLowerCase();
+      const { data: signInData, error: signInError } = await supabase.auth.signInWithPassword({
+        email: normalizedEmail,
+        password,
+      });
+
+      if (signInError || !signInData.user || !signInData.session) {
+        return {
+          success: false,
+          error: signInError?.message || 'Invalid email or password',
+        };
+      }
+
+      const { data: linkedAdmin, error: linkedAdminError } = await db.admins
+        .select('*')
+        .eq('auth_user_id', signInData.user.id)
+        .maybeSingle();
+
+      if (linkedAdminError) {
+        await supabase.auth.signOut();
+        return {
+          success: false,
+          error: linkedAdminError.message || 'Unable to verify admin account.',
+        };
+      }
+
+      let adminData = linkedAdmin as Admin | null;
+
+      // First-login migration path:
+      // if auth_user_id is not linked yet, match by email and bind best-effort.
+      if (!adminData) {
+        const { data: emailAdmin, error: emailAdminError } = await db.admins
+          .select('*')
+          .ilike('email', normalizedEmail)
+          .maybeSingle();
+
+        if (emailAdminError) {
+          await supabase.auth.signOut();
+          return {
+            success: false,
+            error: emailAdminError.message || 'Unable to verify admin account.',
+          };
+        }
+
+        if (!emailAdmin) {
+          await supabase.auth.signOut();
+          return {
+            success: false,
+            error: 'This account is not authorized as an admin.',
+          };
+        }
+
+        if (emailAdmin.auth_user_id && emailAdmin.auth_user_id !== signInData.user.id) {
+          await supabase.auth.signOut();
+          return {
+            success: false,
+            error: 'Admin account is linked to a different auth identity.',
+          };
+        }
+
+        adminData = emailAdmin as Admin;
+
+        if (!emailAdmin.auth_user_id) {
+          await db.admins
+            .update({ auth_user_id: signInData.user.id })
+            .eq('id', emailAdmin.id)
+            .then(() => {}, () => {});
+        }
+      }
+
+      if (!adminData.is_active) {
+        await supabase.auth.signOut();
+        return {
+          success: false,
+          error: 'Account is not active',
+        };
+      }
+
+      return {
+        success: true,
+        data: {
+          admin: adminData as Admin,
+          token: signInData.session.access_token,
+        },
+      };
+    };
+
     try {
       if (!isSupabaseConfigured || supabaseUrlForDebug.includes('placeholder')) {
         return {
@@ -469,32 +373,42 @@ export const authApi = {
         };
       }
 
-      // Normalize email: trim whitespace
-      const trimmedEmail = email.trim();
-      const normalizedEmail = trimmedEmail.toLowerCase();
+      const { data, error } = await supabase.functions.invoke<{
+        success: boolean;
+        error?: string;
+        data?: {
+          admin: Admin;
+          token: string;
+        };
+      }>('admin-login', {
+        body: {
+          email,
+          password,
+        },
+      });
 
-      // Query admin by email - try exact match first
-      const { data, error } = await db.admins
-        .select('*')
-        .eq('email', trimmedEmail)
-        .maybeSingle();
-
-      // Try case-insensitive search as fallback if no exact match
-      if (!data && !error) {
-        const { data: caseInsensitiveData } = await db.admins
-          .select('*')
-          .eq('email', normalizedEmail)
-          .maybeSingle();
-
-        if (caseInsensitiveData) {
-          // Use the found data
-          const result = { data: caseInsensitiveData, error: null };
-          return await handleAdminLoginResult(result, password);
-        }
+      if (error) {
+        return await secureAdminAuthFallback();
       }
 
-      // Handle the result
-      return await handleAdminLoginResult({ data, error }, password);
+      if (!data?.success || !data.data) {
+        if (
+          data?.error?.includes('Failed to send a request to the Edge Function') ||
+          data?.error?.includes('Edge Function')
+        ) {
+          return await secureAdminAuthFallback();
+        }
+
+        return {
+          success: false,
+          error: data?.error || 'Login failed. Please try again.',
+        };
+      }
+
+      return {
+        success: true,
+        data: data.data,
+      };
     } catch (error: any) {
       if (!isSupabaseConfigured) {
         return {
@@ -504,10 +418,7 @@ export const authApi = {
       }
 
       if (error.message?.includes('Network') || error.message?.includes('fetch') || error.name === 'TypeError') {
-        return {
-          success: false,
-          error: 'Network error. Please check your internet connection and try again.'
-        };
+        return await secureAdminAuthFallback();
       }
 
       return { success: false, error: 'Login failed. Please try again.' };
@@ -558,85 +469,13 @@ export const authApi = {
 
   // Employee login
   async employeeLogin(email: string, password: string): Promise<ApiResponse<{ employee: Employee; token: string }>> {
-    try {
-      if (!isSupabaseConfigured || supabaseUrlForDebug.includes('placeholder')) {
-        return {
-          success: false,
-          error: 'Supabase not configured. Please check your .env file and restart Expo.'
-        };
-      }
-
-      // Normalize email: trim whitespace
-      const trimmedEmail = email.trim();
-      const normalizedEmail = trimmedEmail.toLowerCase();
-
-      // Query employee by email - try exact match first
-      const { data, error } = await db.employees
-        .select('*')
-        .eq('email', trimmedEmail)
-        .maybeSingle();
-
-      // Try case-insensitive search as fallback if no exact match
-      if (!data && !error) {
-        const { data: caseInsensitiveData } = await db.employees
-          .select('*')
-          .eq('email', normalizedEmail)
-          .maybeSingle();
-
-        if (caseInsensitiveData) {
-          // Use the found data
-          const result = { data: caseInsensitiveData, error: null };
-          return await handleEmployeeLoginResult(result, password);
-        }
-      }
-
-      if (error) {
-        // Table doesn't exist - need to run migrations
-        if (error.code === '42P01' || error.message?.includes('relation') || error.message?.includes('does not exist')) {
-          return {
-            success: false,
-            error: 'Database tables not found. Please run migrations in Supabase SQL Editor. See QUICK_START.md for details.'
-          };
-        }
-
-        // Network/connection error
-        if (error.message?.includes('Failed to fetch') || error.message?.includes('Network') || error.message?.includes('Network request failed') || error.message?.includes('TypeError') || (error as any).name === 'TypeError') {
-          return {
-            success: false,
-            error: 'Cannot connect to Supabase. Please check your internet connection and verify the Supabase project is active.'
-          };
-        }
-
-        // RLS policy violation
-        if (error.message?.includes('row-level security policy') || error.message?.includes('RLS')) {
-          return {
-            success: false,
-            error: 'Database security policy error. Please run migration 004_setup_rls_policies.sql in Supabase SQL Editor.'
-          };
-        }
-
-        return { success: false, error: 'Login failed. Please check your credentials and try again.' };
-      }
-
-      // Handle the result
-      return await handleEmployeeLoginResult({ data, error }, password);
-    } catch (error: any) {
-      if (!isSupabaseConfigured) {
-        return {
-          success: false,
-          error: 'Supabase not configured. Please check your .env file and restart Expo.'
-        };
-      }
-
-      if (error.message?.includes('Network') || error.message?.includes('fetch') || error.name === 'TypeError') {
-        return {
-          success: false,
-          error: 'Network error. Please check your internet connection and try again.'
-        };
-      }
-
-      return { success: false, error: 'Login failed. Please check your credentials and try again.' };
-    }
+    void email;
+    void password;
+    return {
+      success: false,
+      error:
+        'Legacy employee login is disabled. Use device-bound employee sign-in from the current auth flow.',
+    };
   },
 };
 
@@ -2174,6 +2013,106 @@ export const employeeApi = {
       return { success: true, data: data as Employee };
     } catch (error: any) {
       return { success: false, error: error.message || 'Failed to load profile' };
+    }
+  },
+
+  async checkInSession(employeeId: number): Promise<ApiResponse<AttendanceSession>> {
+    try {
+      if (!isSupabaseConfigured) {
+        return { success: false, error: 'Supabase is not configured' };
+      }
+
+      const { data, error } = await supabase.rpc('api_check_in', {
+        p_employee_id: employeeId,
+      });
+
+      if (error) {
+        return { success: false, error: error.message || 'Check-in failed' };
+      }
+
+      return { success: true, data: data as AttendanceSession };
+    } catch (error: any) {
+      return { success: false, error: error.message || 'Check-in failed' };
+    }
+  },
+
+  async checkOutSession(employeeId: number): Promise<ApiResponse<AttendanceSession>> {
+    try {
+      if (!isSupabaseConfigured) {
+        return { success: false, error: 'Supabase is not configured' };
+      }
+
+      const { data, error } = await supabase.rpc('api_check_out', {
+        p_employee_id: employeeId,
+      });
+
+      if (error) {
+        return { success: false, error: error.message || 'Check-out failed' };
+      }
+
+      await this.clearLiveLocation(employeeId);
+
+      return { success: true, data: data as AttendanceSession };
+    } catch (error: any) {
+      return { success: false, error: error.message || 'Check-out failed' };
+    }
+  },
+
+  async getAttendanceStatus(employeeId: number): Promise<ApiResponse<AttendanceStatus>> {
+    try {
+      if (!isSupabaseConfigured) {
+        return { success: false, error: 'Supabase is not configured' };
+      }
+
+      const { data, error } = await supabase.rpc('api_get_status', {
+        p_employee_id: employeeId,
+      });
+
+      if (error) {
+        return { success: false, error: error.message || 'Failed to load attendance status' };
+      }
+
+      return { success: true, data: data as AttendanceStatus };
+    } catch (error: any) {
+      return { success: false, error: error.message || 'Failed to load attendance status' };
+    }
+  },
+
+  async getTodaySummary(employeeId: number): Promise<ApiResponse<TodayAttendanceSummary>> {
+    try {
+      if (!isSupabaseConfigured) {
+        return { success: false, error: 'Supabase is not configured' };
+      }
+
+      const { data, error } = await supabase.rpc('api_today_summary', {
+        p_employee_id: employeeId,
+      });
+
+      if (error) {
+        return { success: false, error: error.message || 'Failed to load today summary' };
+      }
+
+      return { success: true, data: data as TodayAttendanceSummary };
+    } catch (error: any) {
+      return { success: false, error: error.message || 'Failed to load today summary' };
+    }
+  },
+
+  async runAutoCheckoutScheduler(): Promise<ApiResponse<number>> {
+    try {
+      if (!isSupabaseConfigured) {
+        return { success: false, error: 'Supabase is not configured' };
+      }
+
+      const { data, error } = await supabase.rpc('auto_checkout_due_attendance_sessions');
+
+      if (error) {
+        return { success: false, error: error.message || 'Auto checkout failed' };
+      }
+
+      return { success: true, data: Number(data || 0) };
+    } catch (error: any) {
+      return { success: false, error: error.message || 'Auto checkout failed' };
     }
   },
 

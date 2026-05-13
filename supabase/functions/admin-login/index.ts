@@ -1,103 +1,124 @@
-// Supabase Edge Function: Admin Login
-import {serve} from 'https://deno.land/std@0.168.0/http/server.ts';
-import {createClient} from 'https://esm.sh/@supabase/supabase-js@2';
+/// <reference path="../_shared/edge-runtime.d.ts" />
+// @ts-ignore Deno edge runtime URL import
+import { serve } from 'https://deno.land/std@0.224.0/http/server.ts';
+// @ts-ignore Deno edge runtime URL import
+import { createClient } from 'https://esm.sh/@supabase/supabase-js@2.49.8';
+// @ts-ignore Deno edge runtime URL import
+import { compare, hash } from 'https://esm.sh/bcryptjs@2.4.3';
+import { corsHeaders } from '../_shared/cors.ts';
 
-const corsHeaders = {
-  'Access-Control-Allow-Origin': '*',
-  'Access-Control-Allow-Headers':
-    'authorization, x-client-info, apikey, content-type',
-};
-
-serve(async (req) => {
-  // Handle CORS preflight
+serve(async (req: Request) => {
   if (req.method === 'OPTIONS') {
-    return new Response('ok', {headers: corsHeaders});
+    return new Response('ok', { headers: corsHeaders });
   }
 
   try {
-    const {email, password} = await req.json();
+    const { email, password } = await req.json();
 
     if (!email || !password) {
-      return new Response(
-        JSON.stringify({success: false, error: 'Email and password are required'}),
-        {
-          headers: {...corsHeaders, 'Content-Type': 'application/json'},
-          status: 400,
-        }
+      return json(
+        { success: false, error: 'Email and password are required' },
+        400,
       );
     }
 
     const supabaseClient = createClient(
       Deno.env.get('SUPABASE_URL') ?? '',
-      Deno.env.get('SUPABASE_SERVICE_ROLE_KEY') ?? ''
+      Deno.env.get('SUPABASE_SERVICE_ROLE_KEY') ?? '',
     );
 
-    // Query admin by email and password
-    // Note: In production, passwords should be hashed with bcrypt
+    const trimmedEmail = String(email).trim();
+    const normalizedEmail = trimmedEmail.toLowerCase();
+
     const {data, error} = await supabaseClient
       .from('admins')
       .select('*')
-      .eq('email', email)
-      .eq('password', password) // In production, use bcrypt comparison
+      .ilike('email', normalizedEmail)
       .single();
 
     if (error || !data) {
-      return new Response(
-        JSON.stringify({success: false, error: 'Invalid email or password'}),
-        {
-          headers: {...corsHeaders, 'Content-Type': 'application/json'},
-          status: 401,
-        }
+      return json(
+        { success: false, error: 'Invalid email or password' },
+        401,
       );
     }
 
+    const passwordValid = await verifyPassword(String(password), data.password);
+    if (!passwordValid) {
+      return json(
+        { success: false, error: 'Invalid email or password' },
+        401,
+      );
+    }
+
+    if (typeof data.password === 'string' && !isBcryptHash(data.password)) {
+      const upgradedPassword = await hash(String(password).trim(), 10);
+      await supabaseClient
+        .from('admins')
+        .update({ password: upgradedPassword })
+        .eq('id', data.id);
+    }
+
     if (!data.is_verified) {
-      return new Response(
-        JSON.stringify({success: false, error: 'Email not verified'}),
-        {
-          headers: {...corsHeaders, 'Content-Type': 'application/json'},
-          status: 403,
-        }
+      return json(
+        { success: false, error: 'Email not verified' },
+        403,
       );
     }
 
     if (!data.is_active) {
-      return new Response(
-        JSON.stringify({success: false, error: 'Account is not active'}),
-        {
-          headers: {...corsHeaders, 'Content-Type': 'application/json'},
-          status: 403,
-        }
+      return json(
+        { success: false, error: 'Account is not active' },
+        403,
       );
     }
 
-    // Generate JWT token (in production, use proper JWT library)
-    const token = 'mock-jwt-token'; // Replace with actual JWT generation
-
-    return new Response(
-      JSON.stringify({
+    return json({
         success: true,
         data: {
           admin: {
             ...data,
-            password: undefined, // Remove password from response
+            password: undefined,
           },
-          token,
+          token: `admin-session-${data.id}`,
         },
-      }),
-      {
-        headers: {...corsHeaders, 'Content-Type': 'application/json'},
-        status: 200,
-      }
-    );
+      });
   } catch (error) {
-    return new Response(
-      JSON.stringify({success: false, error: error.message}),
+    return json(
       {
-        headers: {...corsHeaders, 'Content-Type': 'application/json'},
-        status: 500,
-      }
+        success: false,
+        error: error instanceof Error ? error.message : 'Unexpected error',
+      },
+      500,
     );
   }
 });
+
+async function verifyPassword(password: string, storedPassword: string | null) {
+  if (!storedPassword || typeof storedPassword !== 'string') {
+    return false;
+  }
+
+  const normalizedPassword = password.trim();
+  if (!normalizedPassword) {
+    return false;
+  }
+
+  if (isBcryptHash(storedPassword)) {
+    return compare(normalizedPassword, storedPassword);
+  }
+
+  return normalizedPassword === storedPassword;
+}
+
+function isBcryptHash(value: string) {
+  return value.startsWith('$2a$') || value.startsWith('$2b$') || value.startsWith('$2y$');
+}
+
+function json(body: unknown, status = 200) {
+  return new Response(JSON.stringify(body), {
+    status,
+    headers: { ...corsHeaders, 'Content-Type': 'application/json' },
+  });
+}
 

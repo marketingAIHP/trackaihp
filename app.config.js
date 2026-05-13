@@ -73,6 +73,8 @@ export default {
     },
     plugins: [
       'expo-asset',
+      'expo-router',
+      'expo-secure-store',
       [
         'expo-location',
         {

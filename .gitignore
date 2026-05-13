@@ -72,6 +72,11 @@ web-build/
 *.swp
 *.swo
 *~
+build_verify.log
+sql.md
+.chrome-crash/
+*.sql
+*.md
 
 # Testing
 coverage/

@@ -4,24 +4,34 @@
   },
   "build": {
     "development": {
-      "environment": "development",
       "developmentClient": true,
-      "distribution": "internal"
+      "distribution": "internal",
+      "env": {
+        "EXPO_PUBLIC_SUPABASE_URL": "https://your-project.supabase.co",
+        "EXPO_PUBLIC_SUPABASE_ANON_KEY": "your-anon-key",
+        "EXPO_PUBLIC_GOOGLE_MAPS_API_KEY": "your-google-maps-key"
+      }
     },
     "preview": {
-      "environment": "preview",
       "distribution": "internal",
       "android": {
         "buildType": "apk"
+      },
+      "env": {
+        "EXPO_PUBLIC_SUPABASE_URL": "https://your-project.supabase.co",
+        "EXPO_PUBLIC_SUPABASE_ANON_KEY": "your-anon-key",
+        "EXPO_PUBLIC_GOOGLE_MAPS_API_KEY": "your-google-maps-key"
       }
     },
     "production": {
-      "environment": "production",
       "android": {
         "buildType": "app-bundle"
       },
       "env": {
-        "NODE_ENV": "production"
+        "NODE_ENV": "production",
+        "EXPO_PUBLIC_SUPABASE_URL": "https://your-project.supabase.co",
+        "EXPO_PUBLIC_SUPABASE_ANON_KEY": "your-anon-key",
+        "EXPO_PUBLIC_GOOGLE_MAPS_API_KEY": "your-google-maps-key"
       }
     }
   },
@@ -29,4 +39,3 @@
     "production": {}
   }
 }
-
