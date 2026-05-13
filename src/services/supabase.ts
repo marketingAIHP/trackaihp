@@ -16,14 +16,15 @@ const key = safeEnv.supabaseAnonKey;
 export const supabase = createClient(url, key, {
   auth: {
     storage: AsyncStorage,
-    autoRefreshToken: false, // OPTIMIZATION: Disable - we use anon key
-    persistSession: false, // OPTIMIZATION: Don't persist - always use anon key
+    // Keep authenticated sessions so RLS-protected operations (create admin/site/employee)
+    // can use user JWT instead of anon credentials.
+    autoRefreshToken: true,
+    persistSession: true,
     detectSessionInUrl: false,
   },
   global: {
     headers: {
       'apikey': key,
-      'Authorization': `Bearer ${key}`,
     },
     // OPTIMIZATION: Reduced timeout to 15s to release connections faster on failure
     fetch: async (url, options = {}) => {

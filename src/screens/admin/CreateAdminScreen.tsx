@@ -29,6 +29,8 @@ export const CreateAdminScreen: React.FC = () => {
   const navigation = useNavigation<any>();
   const queryClient = useQueryClient();
   const [showPassword, setShowPassword] = useState(false);
+  const [submitError, setSubmitError] = useState<string | null>(null);
+  const [submitSuccess, setSubmitSuccess] = useState<string | null>(null);
   const [selectedImageUri, setSelectedImageUri] = useState<string | null>(null);
   const [uploadingImage, setUploadingImage] = useState(false);
   const uploadedImageUrlRef = useRef<string | null>(null);
@@ -96,6 +98,8 @@ export const CreateAdminScreen: React.FC = () => {
 
   const createAdminMutation = useMutation({
     mutationFn: async (data: AdminFormData) => {
+      setSubmitError(null);
+      setSubmitSuccess(null);
       const response = await adminApi.createAdmin({
         first_name: data.first_name,
         last_name: data.last_name,
@@ -112,6 +116,7 @@ export const CreateAdminScreen: React.FC = () => {
     onSuccess: async () => {
       await queryClient.invalidateQueries({queryKey: ['admin', 'dashboard']});
       await queryClient.refetchQueries({queryKey: ['admin', 'dashboard']});
+      setSubmitSuccess('Admin created successfully.');
       if (Platform.OS === 'web') {
         handleSuccessNavigation();
         return;
@@ -124,7 +129,15 @@ export const CreateAdminScreen: React.FC = () => {
       ]);
     },
     onError: (error: any) => {
-      Alert.alert('Error', error.message || 'Failed to create admin');
+      const message = error?.message || 'Failed to create admin';
+      setSubmitError(message);
+      if (Platform.OS !== 'web') {
+        Alert.alert('Error', message);
+      } else {
+        // Keep a console trace for browser debugging.
+        // eslint-disable-next-line no-console
+        console.error('[CreateAdmin] Failed:', message);
+      }
     },
   });
 
@@ -254,6 +267,13 @@ export const CreateAdminScreen: React.FC = () => {
               <Text style={styles.errorText}>{errors.password.message}</Text>
             )}
 
+            {submitError ? (
+              <Text style={styles.errorText}>{submitError}</Text>
+            ) : null}
+            {submitSuccess ? (
+              <Text style={styles.successText}>{submitSuccess}</Text>
+            ) : null}
+
             <Button
               mode="contained"
               onPress={handleSubmit(onSubmit)}
@@ -304,6 +324,12 @@ const styles = StyleSheet.create({
   },
   errorText: {
     color: colors.danger[600],
+    fontSize: 12,
+    marginBottom: 8,
+    marginLeft: 12,
+  },
+  successText: {
+    color: colors.success?.[600] || '#15803d',
     fontSize: 12,
     marginBottom: 8,
     marginLeft: 12,

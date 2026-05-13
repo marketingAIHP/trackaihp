@@ -1,5 +1,9 @@
 import { supabase, db, storage, isSupabaseConfigured, supabaseUrlForDebug } from './supabase';
 import * as ExpoLocation from 'expo-location';
+import * as Application from 'expo-application';
+import * as Device from 'expo-device';
+import AsyncStorage from '@react-native-async-storage/async-storage';
+import { v4 as uuidv4 } from 'uuid';
 import {
   Admin,
   Employee,
@@ -26,6 +30,16 @@ import { deleteImage } from '../utils/storage';
 import { checkGeofence } from '../utils/geofence';
 import { hashPassword } from '../utils/password';
 import { logger } from '../utils/logger';
+
+const LEGACY_INSTALLATION_ID_KEY = '@legacy_device_binding_installation_id';
+
+async function getLegacyInstallationId(): Promise<string> {
+  const existing = await AsyncStorage.getItem(LEGACY_INSTALLATION_ID_KEY);
+  if (existing) return existing;
+  const created = uuidv4();
+  await AsyncStorage.setItem(LEGACY_INSTALLATION_ID_KEY, created);
+  return created;
+}
 
 // Helper function to parse timestamps with proper UTC handling
 // Supabase returns timestamps without 'Z' suffix, so we need to handle that
@@ -469,13 +483,95 @@ export const authApi = {
 
   // Employee login
   async employeeLogin(email: string, password: string): Promise<ApiResponse<{ employee: Employee; token: string }>> {
-    void email;
-    void password;
-    return {
-      success: false,
-      error:
-        'Legacy employee login is disabled. Use device-bound employee sign-in from the current auth flow.',
-    };
+    try {
+      if (!isSupabaseConfigured || supabaseUrlForDebug.includes('placeholder')) {
+        return {
+          success: false,
+          error: 'Supabase not configured. Please check your .env file and restart Expo.',
+        };
+      }
+
+      const installationId = await getLegacyInstallationId();
+      const androidId = Application.getAndroidId?.() ?? '';
+      if (!androidId) {
+        return {
+          success: false,
+          error: 'Android device ID unavailable. Use an Android device/build for employee login.',
+        };
+      }
+
+      const { data, error } = await supabase.functions.invoke<{
+        success: boolean;
+        code: string;
+        message: string;
+        data?: {
+          employee: {
+            id: number;
+            email: string;
+          };
+          session: {
+            accessToken: string;
+            refreshToken: string;
+          };
+        };
+      }>('employee-login', {
+        body: {
+          identifier: email.trim(),
+          password,
+          installationId,
+          androidId,
+          deviceBrand: Device.brand ?? null,
+          deviceModel: Device.modelName ?? null,
+          osVersion: Device.osVersion ?? null,
+          appVersion: Application.nativeApplicationVersion ?? null,
+        },
+      });
+
+      if (error) {
+        return { success: false, error: error.message || 'Login failed. Please try again.' };
+      }
+
+      if (!data?.success || !data.data?.session) {
+        return { success: false, error: data?.message || 'Login failed. Please try again.' };
+      }
+
+      const { error: sessionError } = await supabase.auth.setSession({
+        access_token: data.data.session.accessToken,
+        refresh_token: data.data.session.refreshToken,
+      });
+      if (sessionError) {
+        return { success: false, error: sessionError.message || 'Failed to establish session.' };
+      }
+
+      const {
+        data: { user },
+      } = await supabase.auth.getUser();
+      if (!user) {
+        return { success: false, error: 'Failed to resolve authenticated user.' };
+      }
+
+      const { data: employeeRow, error: employeeError } = await db.employees
+        .select('*')
+        .eq('auth_user_id', user.id)
+        .maybeSingle();
+
+      if (employeeError || !employeeRow) {
+        return {
+          success: false,
+          error: employeeError?.message || 'Employee profile not found after login.',
+        };
+      }
+
+      return {
+        success: true,
+        data: {
+          employee: employeeRow as Employee,
+          token: data.data.session.accessToken,
+        },
+      };
+    } catch (error: any) {
+      return { success: false, error: error.message || 'Login failed. Please try again.' };
+    }
   },
 };
 
@@ -919,47 +1015,86 @@ export const adminApi = {
       if (!isSupabaseConfigured) {
         return { success: false, error: 'Supabase is not configured' };
       }
+      void adminId;
 
-      // Check if email already exists
-      const { data: existingEmployee } = await db.employees
-        .select('id')
-        .eq('email', employeeData.email)
-        .maybeSingle();
+      // Employee creation must go through secure provisioning flow
+      // (Auth user + employee row linkage), then enrich optional profile fields.
+      const fullName = `${employeeData.first_name} ${employeeData.last_name}`.trim();
+      const fallbackEmployeeId =
+        employeeData.employee_id?.trim() || `EMP-${Date.now()}`;
 
-      if (existingEmployee) {
-        return { success: false, error: 'An employee with this email already exists' };
-      }
-
-      // Validate and hash password before storing
-      if (!employeeData.password || typeof employeeData.password !== 'string' || employeeData.password.trim().length === 0) {
-        return { success: false, error: 'Password is required and must be a non-empty string' };
-      }
-      const hashedPassword = await hashPassword(employeeData.password);
-
-      const { data, error } = await db.employees
-        .insert({
-          employee_id: employeeData.employee_id || null,
-          first_name: employeeData.first_name,
-          last_name: employeeData.last_name,
+      const { data: provisionData, error: provisionError } = await supabase.functions.invoke<{
+        success: boolean;
+        message?: string;
+        data?: {
+          id: number;
+          employee_id: string | null;
+          full_name: string | null;
+          email: string;
+          role: string | null;
+        };
+      }>('provision-employee-account', {
+        body: {
+          employeeId: fallbackEmployeeId,
+          firstName: employeeData.first_name,
+          lastName: employeeData.last_name,
+          fullName,
           email: employeeData.email,
-          phone: employeeData.phone || null,
-          address: employeeData.address || null,
-          password: hashedPassword,
-          admin_id: adminId,
-          site_id: employeeData.site_id || null,
-          department_id: employeeData.department_id || null,
-          remote_work: employeeData.remote_work || false,
-          profile_image: employeeData.profile_image || null,
-          is_active: true,
-        })
+          password: employeeData.password,
+        },
+      });
+
+      if (provisionError) {
+        return {
+          success: false,
+          error: provisionError.message || 'Failed to create employee',
+        };
+      }
+
+      if (!provisionData?.success || !provisionData.data?.id) {
+        return {
+          success: false,
+          error: provisionData?.message || 'Failed to create employee',
+        };
+      }
+
+      const createdEmployeeId = provisionData.data.id;
+
+      // Apply optional profile/work assignment fields after provisioning.
+      const patch: Record<string, unknown> = {};
+      if (employeeData.phone !== undefined) patch.phone = employeeData.phone || null;
+      if (employeeData.address !== undefined) patch.address = employeeData.address || null;
+      patch.remote_work = employeeData.remote_work || false;
+      patch.site_id = employeeData.remote_work ? null : (employeeData.site_id || null);
+      if (employeeData.department_id !== undefined) patch.department_id = employeeData.department_id || null;
+      if (employeeData.profile_image !== undefined) patch.profile_image = employeeData.profile_image || null;
+
+      if (Object.keys(patch).length > 0) {
+        const { error: patchError } = await db.employees
+          .update(patch)
+          .eq('id', createdEmployeeId);
+
+        if (patchError) {
+          return {
+            success: false,
+            error: patchError.message || 'Employee created but profile update failed',
+          };
+        }
+      }
+
+      const { data: hydratedEmployee, error: fetchError } = await db.employees
         .select('*, site:work_sites(*), department:departments(*)')
+        .eq('id', createdEmployeeId)
         .single();
 
-      if (error) {
-        return { success: false, error: error.message || 'Failed to create employee' };
+      if (fetchError || !hydratedEmployee) {
+        return {
+          success: false,
+          error: fetchError?.message || 'Employee created but failed to load details',
+        };
       }
 
-      return { success: true, data: data as Employee };
+      return { success: true, data: hydratedEmployee as Employee };
     } catch (error: any) {
       return { success: false, error: error.message || 'Failed to create employee' };
     }
