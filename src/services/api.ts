@@ -25,13 +25,18 @@ import {
   CheckoutType,
   SiteAttendanceSummary,
 } from '../types';
-import { STORAGE_BUCKETS } from '../constants/config';
+import { STORAGE_BUCKETS, SUPABASE_ANON_KEY } from '../constants/config';
 import { deleteImage } from '../utils/storage';
 import { checkGeofence } from '../utils/geofence';
 import { hashPassword } from '../utils/password';
 import { logger } from '../utils/logger';
 
 const LEGACY_INSTALLATION_ID_KEY = '@legacy_device_binding_installation_id';
+
+const publicFunctionHeaders = () => ({
+  apikey: SUPABASE_ANON_KEY,
+  Authorization: `Bearer ${SUPABASE_ANON_KEY}`,
+});
 
 async function getLegacyInstallationId(): Promise<string> {
   const existing = await AsyncStorage.getItem(LEGACY_INSTALLATION_ID_KEY);
@@ -426,6 +431,7 @@ export const authApi = {
           };
         };
       }>('admin-login', {
+        headers: publicFunctionHeaders(),
         body: {
           email,
           password,
@@ -438,6 +444,7 @@ export const authApi = {
           !edgeMessage ||
           edgeMessage.includes('Failed to send') ||
           edgeMessage.includes('Function not found') ||
+          edgeMessage.toLowerCase().includes('invalid jwt') ||
           edgeMessage.includes('Network') ||
           edgeMessage.includes('fetch');
 
@@ -577,6 +584,7 @@ export const authApi = {
           };
         };
       }>('employee-login', {
+        headers: publicFunctionHeaders(),
         body: {
           identifier: email.trim(),
           password,
