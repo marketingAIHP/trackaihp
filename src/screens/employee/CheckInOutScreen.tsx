@@ -328,9 +328,16 @@ export const CheckInOutScreen: React.FC = () => {
       if (response.success && response.data) return response.data;
       throw new Error(response.error || 'Check-in failed');
     },
-    onSuccess: async (attendance) => {
+    onSuccess: async (attendance, checkInLocation) => {
       const siteId = attendance.site_id || profile?.site_id || undefined;
-      const trackingResult = await LocationTrackingService.checkInEmployee(employeeId, siteId);
+      const trackingResult = await LocationTrackingService.checkInEmployee(
+        employeeId,
+        siteId,
+        {
+          latitude: attendance.check_in_latitude ?? checkInLocation.latitude,
+          longitude: attendance.check_in_longitude ?? checkInLocation.longitude,
+        }
+      );
       if (!trackingResult.success) {
         Alert.alert('Tracking Error', trackingResult.error || 'Failed to start live tracking');
       }

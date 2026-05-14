@@ -288,7 +288,11 @@ const LocationTrackingService = {
   /**
    * Start foreground location tracking on check-in.
    */
-  async checkInEmployee(employeeId: number, siteId?: number): Promise<{ success: boolean; error?: string }> {
+  async checkInEmployee(
+    employeeId: number,
+    siteId?: number,
+    initialLocation?: Coordinates
+  ): Promise<{ success: boolean; error?: string }> {
     if (isStartingTracking) {
       await log('⚠️ checkInEmployee called while already starting — ignored');
       return { success: true };
@@ -317,8 +321,13 @@ const LocationTrackingService = {
         await AsyncStorage.removeItem(STORAGE_KEYS.SITE_ID);
       }
 
-      // 3. Send first update immediately (fast race strategy)
-      await this.forceOneTimeUpdate();
+      // 3. Send first update immediately. Reuse the exact GPS fix used for check-in
+      // so live tracking starts even if a second location request is slow or flaky.
+      if (initialLocation) {
+        await sendLocation(initialLocation.latitude, initialLocation.longitude, employeeId, siteId);
+      } else {
+        await this.forceOneTimeUpdate();
+      }
 
       // 4. Start foreground watch loop
       await startForegroundWatch(employeeId, siteId);

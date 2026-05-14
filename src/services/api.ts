@@ -41,6 +41,33 @@ async function getLegacyInstallationId(): Promise<string> {
   return created;
 }
 
+async function getEdgeFunctionErrorMessage(error: any, fallback: string): Promise<string> {
+  const context = error?.context;
+
+  try {
+    if (context && typeof context.clone === 'function') {
+      const text = await context.clone().text();
+      if (text) {
+        try {
+          const parsed = JSON.parse(text);
+          return parsed.message || parsed.error || parsed.code || fallback;
+        } catch {
+          return text;
+        }
+      }
+    }
+  } catch {
+    // Fall through to the SDK message/fallback.
+  }
+
+  const message = error?.message;
+  if (message && !message.includes('non-2xx status code')) {
+    return message;
+  }
+
+  return fallback;
+}
+
 // Helper function to parse timestamps with proper UTC handling
 // Supabase returns timestamps without 'Z' suffix, so we need to handle that
 function parseTimestamp(date: string | Date | null | undefined): Date {
@@ -393,6 +420,10 @@ export const authApi = {
         data?: {
           admin: Admin;
           token: string;
+          session?: {
+            accessToken: string;
+            refreshToken: string;
+          };
         };
       }>('admin-login', {
         body: {
@@ -402,6 +433,21 @@ export const authApi = {
       });
 
       if (error) {
+        const edgeMessage = await getEdgeFunctionErrorMessage(error, '');
+        const shouldUseDirectAuthFallback =
+          !edgeMessage ||
+          edgeMessage.includes('Failed to send') ||
+          edgeMessage.includes('Function not found') ||
+          edgeMessage.includes('Network') ||
+          edgeMessage.includes('fetch');
+
+        if (!shouldUseDirectAuthFallback) {
+          return {
+            success: false,
+            error: edgeMessage,
+          };
+        }
+
         return await secureAdminAuthFallback();
       }
 
@@ -417,6 +463,22 @@ export const authApi = {
           success: false,
           error: data?.error || 'Login failed. Please try again.',
         };
+      }
+
+      if (data.data.session?.accessToken && data.data.session?.refreshToken) {
+        const { error: sessionError } = await supabase.auth.setSession({
+          access_token: data.data.session.accessToken,
+          refresh_token: data.data.session.refreshToken,
+        });
+
+        if (sessionError) {
+          return {
+            success: false,
+            error: sessionError.message || 'Failed to establish admin session.',
+          };
+        }
+      } else {
+        return await secureAdminAuthFallback();
       }
 
       return {
@@ -528,7 +590,10 @@ export const authApi = {
       });
 
       if (error) {
-        return { success: false, error: error.message || 'Login failed. Please try again.' };
+        return {
+          success: false,
+          error: await getEdgeFunctionErrorMessage(error, 'Login failed. Please try again.'),
+        };
       }
 
       if (!data?.success || !data.data?.session) {
@@ -1047,7 +1112,10 @@ export const adminApi = {
       if (provisionError) {
         return {
           success: false,
-          error: provisionError.message || 'Failed to create employee',
+          error: await getEdgeFunctionErrorMessage(
+            provisionError,
+            'Failed to create employee account. Please log out and log in as admin again.'
+          ),
         };
       }
 
