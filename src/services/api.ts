@@ -2207,7 +2207,12 @@ export const employeeApi = {
         return { success: false, error: error.message || 'Failed to load attendance status' };
       }
 
-      return { success: true, data: data as AttendanceStatus };
+      const status = data as AttendanceStatus;
+      if (status?.active_session && !(status.active_session as any).id) {
+        status.active_session = null;
+      }
+
+      return { success: true, data: status };
     } catch (error: any) {
       return { success: false, error: error.message || 'Failed to load attendance status' };
     }
