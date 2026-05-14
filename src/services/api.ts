@@ -35,8 +35,53 @@ const LEGACY_INSTALLATION_ID_KEY = '@legacy_device_binding_installation_id';
 
 const publicFunctionHeaders = () => ({
   apikey: SUPABASE_ANON_KEY,
-  Authorization: `Bearer ${SUPABASE_ANON_KEY}`,
 });
+
+async function invokePublicFunction<T>(
+  functionName: string,
+  body: Record<string, unknown>
+): Promise<{ data: T | null; error: any | null }> {
+  try {
+    const response = await fetch(
+      `${supabaseUrlForDebug.replace(/\/$/, '')}/functions/v1/${functionName}`,
+      {
+        method: 'POST',
+        headers: {
+          ...publicFunctionHeaders(),
+          'Content-Type': 'application/json',
+        },
+        body: JSON.stringify(body),
+      }
+    );
+    const responseText = await response.text();
+    let parsedBody: any = null;
+    if (responseText) {
+      try {
+        parsedBody = JSON.parse(responseText);
+      } catch {
+        parsedBody = null;
+      }
+    }
+
+    if (!response.ok) {
+      return {
+        data: parsedBody,
+        error: {
+          message:
+            parsedBody?.message ||
+            parsedBody?.error ||
+            responseText ||
+            `Function returned HTTP ${response.status}`,
+          status: response.status,
+        },
+      };
+    }
+
+    return { data: parsedBody as T, error: null };
+  } catch (error: any) {
+    return { data: null, error };
+  }
+}
 
 async function getLegacyInstallationId(): Promise<string> {
   const existing = await AsyncStorage.getItem(LEGACY_INSTALLATION_ID_KEY);
@@ -419,7 +464,7 @@ export const authApi = {
         };
       }
 
-      const { data, error } = await supabase.functions.invoke<{
+      const { data, error } = await invokePublicFunction<{
         success: boolean;
         error?: string;
         data?: {
@@ -431,11 +476,8 @@ export const authApi = {
           };
         };
       }>('admin-login', {
-        headers: publicFunctionHeaders(),
-        body: {
-          email,
-          password,
-        },
+        email,
+        password,
       });
 
       if (error) {
@@ -569,7 +611,7 @@ export const authApi = {
         };
       }
 
-      const { data, error } = await supabase.functions.invoke<{
+      const { data, error } = await invokePublicFunction<{
         success: boolean;
         code: string;
         message: string;
@@ -584,17 +626,14 @@ export const authApi = {
           };
         };
       }>('employee-login', {
-        headers: publicFunctionHeaders(),
-        body: {
-          identifier: email.trim(),
-          password,
-          installationId,
-          androidId,
-          deviceBrand: Device.brand ?? null,
-          deviceModel: Device.modelName ?? null,
-          osVersion: Device.osVersion ?? null,
-          appVersion: Application.nativeApplicationVersion ?? null,
-        },
+        identifier: email.trim(),
+        password,
+        installationId,
+        androidId,
+        deviceBrand: Device.brand ?? null,
+        deviceModel: Device.modelName ?? null,
+        osVersion: Device.osVersion ?? null,
+        appVersion: Application.nativeApplicationVersion ?? null,
       });
 
       if (error) {

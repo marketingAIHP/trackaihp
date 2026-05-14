@@ -1,6 +1,52 @@
-import { supabase } from '../lib/supabase';
+import { supabase, supabaseAnonKey, supabaseUrl } from '../lib/supabase';
 import { getDeviceContext } from './device.service';
 import type { DeviceAuthResponse, DeviceAuthSuccess } from '../types/device-auth';
+
+async function invokePublicFunction<T>(
+  functionName: string,
+  body: Record<string, unknown>
+): Promise<{ data: T | null; error: any | null }> {
+  try {
+    const response = await fetch(
+      `${(supabaseUrl ?? '').replace(/\/$/, '')}/functions/v1/${functionName}`,
+      {
+        method: 'POST',
+        headers: {
+          apikey: supabaseAnonKey ?? '',
+          'Content-Type': 'application/json',
+        },
+        body: JSON.stringify(body),
+      },
+    );
+    const responseText = await response.text();
+    let parsedBody: any = null;
+    if (responseText) {
+      try {
+        parsedBody = JSON.parse(responseText);
+      } catch {
+        parsedBody = null;
+      }
+    }
+
+    if (!response.ok) {
+      return {
+        data: parsedBody,
+        error: {
+          message:
+            parsedBody?.message ||
+            parsedBody?.error ||
+            responseText ||
+            `Function returned HTTP ${response.status}`,
+          status: response.status,
+        },
+      };
+    }
+
+    return { data: parsedBody as T, error: null };
+  } catch (error: any) {
+    return { data: null, error };
+  }
+}
 
 export const authService = {
   async loginAdmin(email: string, password: string) {
@@ -41,14 +87,12 @@ export const authService = {
   async loginEmployee(identifier: string, password: string): Promise<DeviceAuthSuccess> {
     const device = await getDeviceContext();
 
-    const { data, error } = await supabase.functions.invoke<DeviceAuthResponse>(
+    const { data, error } = await invokePublicFunction<DeviceAuthResponse>(
       'employee-login',
       {
-        body: {
-          identifier,
-          password,
-          ...device,
-        },
+        identifier,
+        password,
+        ...device,
       },
     );
 

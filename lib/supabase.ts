@@ -8,12 +8,12 @@ const extra = (Constants.expoConfig?.extra ??
   Constants.manifest2?.extra ??
   {}) as Record<string, string | undefined>;
 
-const supabaseUrl =
+export const supabaseUrl =
   process.env.EXPO_PUBLIC_SUPABASE_URL ??
   extra.EXPO_PUBLIC_SUPABASE_URL ??
   extra.supabaseUrl;
 
-const supabaseAnonKey =
+export const supabaseAnonKey =
   process.env.EXPO_PUBLIC_SUPABASE_ANON_KEY ??
   extra.EXPO_PUBLIC_SUPABASE_ANON_KEY ??
   extra.supabaseAnonKey;
