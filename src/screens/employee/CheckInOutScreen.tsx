@@ -207,13 +207,13 @@ export const CheckInOutScreen: React.FC = () => {
     staleTime: 30 * 1000,
   });
 
-  const invalidateAttendance = async () => {
+  const invalidateAttendance = useCallback(async () => {
     await Promise.all([
       queryClient.invalidateQueries({ queryKey: ['employee', 'attendance'] }),
       queryClient.invalidateQueries({ queryKey: ['employee', 'attendance-sessions'] }),
       queryClient.invalidateQueries({ queryKey: ['admin'] }),
     ]);
-  };
+  }, [queryClient]);
 
   const profile = profileQuery.data;
   const currentAttendance = currentAttendanceQuery.data || null;
@@ -262,6 +262,23 @@ export const CheckInOutScreen: React.FC = () => {
     if (activeSession.session_type === 'overtime') return true;
     return activeSessionWorkedSeconds >= HALF_DAY_SECONDS;
   })();
+
+  useEffect(() => {
+    if (!employeeId || !hasActiveSession || !autoCheckoutAt) return;
+
+    const refreshDelayMs = Math.max(0, autoCheckoutAt - Date.now()) + 500;
+    const timeoutId = setTimeout(() => {
+      invalidateAttendance().catch(() => {});
+    }, refreshDelayMs);
+
+    return () => clearTimeout(timeoutId);
+  }, [autoCheckoutAt, currentAttendance?.id, employeeId, hasActiveSession, invalidateAttendance]);
+
+  useEffect(() => {
+    if (!employeeId || currentAttendanceQuery.isLoading || currentAttendance) return;
+
+    LocationTrackingService.checkOutEmployee().catch(() => {});
+  }, [currentAttendance, currentAttendanceQuery.isLoading, employeeId]);
 
   const refreshLocation = useCallback(async () => {
     setIsRefreshingLocation(true);
@@ -473,7 +490,7 @@ export const CheckInOutScreen: React.FC = () => {
           <Card style={styles.locationCard}>
             <Card.Content>
               <View style={styles.locationHeader}>
-                <View>
+                <View style={styles.locationHeaderContent}>
                   <Text variant="titleMedium" style={styles.sectionTitle}>Current Location</Text>
                   <Text variant="bodySmall" style={styles.muted}>
                     Fresh GPS is fetched again when you check in or out.
@@ -484,7 +501,8 @@ export const CheckInOutScreen: React.FC = () => {
                   compact
                   icon="refresh"
                   loading={isRefreshingLocation}
-                  onPress={refreshLocation}>
+                  onPress={refreshLocation}
+                  style={styles.refreshButton}>
                   Refresh
                 </Button>
               </View>
@@ -656,10 +674,17 @@ const styles = StyleSheet.create({
   },
   locationHeader: {
     flexDirection: 'row',
-    alignItems: 'center',
+    alignItems: 'flex-start',
     justifyContent: 'space-between',
     gap: 12,
     marginBottom: 12,
+  },
+  locationHeaderContent: {
+    flex: 1,
+    minWidth: 0,
+  },
+  refreshButton: {
+    alignSelf: 'flex-start',
   },
   locationDetails: {
     gap: 4,

@@ -76,6 +76,7 @@ build_verify.log
 sql.md
 .chrome-crash/
 *.sql
+!supabase/migrations/20260515_fix_attendance_auto_checkout_and_notifications.sql
 *.md
 
 # Testing

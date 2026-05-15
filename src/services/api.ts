@@ -32,6 +32,10 @@ import { hashPassword } from '../utils/password';
 import { logger } from '../utils/logger';
 
 const LEGACY_INSTALLATION_ID_KEY = '@legacy_device_binding_installation_id';
+const IST_TIME_ZONE = 'Asia/Kolkata';
+const FULL_DAY_AUTO_CHECKOUT_MS = 9 * 60 * 60 * 1000;
+const DUPLICATE_NOTIFICATION_WINDOW_MS = 2 * 60 * 1000;
+const pendingAutoCheckoutAttendanceIds = new Set<number>();
 
 const publicFunctionHeaders = () => ({
   apikey: SUPABASE_ANON_KEY,
@@ -137,11 +141,76 @@ function parseTimestamp(date: string | Date | null | undefined): Date {
   return new Date(timestampStr);
 }
 
+function getIstDateKey(value: string | Date): string {
+  const date = parseTimestamp(value);
+  const parts = new Intl.DateTimeFormat('en-CA', {
+    timeZone: IST_TIME_ZONE,
+    year: 'numeric',
+    month: '2-digit',
+    day: '2-digit',
+  }).formatToParts(date);
+
+  const year = parts.find((part) => part.type === 'year')?.value || '0000';
+  const month = parts.find((part) => part.type === 'month')?.value || '00';
+  const day = parts.find((part) => part.type === 'day')?.value || '00';
+  return `${year}-${month}-${day}`;
+}
+
+function getNextIstMidnight(checkInTime: string | Date): Date {
+  const [year, month, day] = getIstDateKey(checkInTime).split('-').map(Number);
+  return new Date(Date.UTC(year, month - 1, day + 1, -5, -30, 0, 0));
+}
+
 function getAutoCheckoutDeadline(checkInTime: string | Date): Date {
-  const deadline = parseTimestamp(checkInTime);
-  deadline.setDate(deadline.getDate() + 1);
-  deadline.setHours(5, 0, 0, 0);
-  return deadline;
+  const checkInAt = parseTimestamp(checkInTime);
+  const nineHourDeadline = new Date(checkInAt.getTime() + FULL_DAY_AUTO_CHECKOUT_MS);
+  const dayEndDeadline = getNextIstMidnight(checkInTime);
+  return new Date(Math.min(nineHourDeadline.getTime(), dayEndDeadline.getTime()));
+}
+
+function buildNotificationDedupKey(notification: Notification): string {
+  const metadata = notification.metadata || {};
+  const attendanceId = metadata.attendance_id != null ? String(metadata.attendance_id) : '';
+  const employeeId = metadata.employee_id != null ? String(metadata.employee_id) : '';
+  const siteId = metadata.site_id != null ? String(metadata.site_id) : '';
+  const event = metadata.event != null ? String(metadata.event) : '';
+  return [
+    notification.admin_id,
+    notification.type,
+    attendanceId,
+    employeeId,
+    siteId,
+    event,
+    notification.title,
+    notification.message,
+  ].join('|');
+}
+
+function dedupeNotifications(notifications: Notification[]): Notification[] {
+  const latestByKey = new Map<string, string>();
+  const deduped: Notification[] = [];
+
+  notifications.forEach((notification) => {
+    const key = buildNotificationDedupKey(notification);
+    const createdAt = parseTimestamp(notification.created_at).getTime();
+    const latestForKey = latestByKey.get(key);
+
+    if (latestForKey) {
+      const latestCreatedAt = parseTimestamp(latestForKey).getTime();
+      if (
+        Number.isFinite(createdAt) &&
+        Number.isFinite(latestCreatedAt) &&
+        Math.abs(latestCreatedAt - createdAt) <= DUPLICATE_NOTIFICATION_WINDOW_MS
+      ) {
+        return;
+      }
+    }
+
+    latestByKey.set(key, notification.created_at);
+    deduped.push(notification);
+  });
+
+  return deduped;
 }
 
 function inferCheckoutType(
@@ -267,6 +336,45 @@ async function resolveLocationName(
     return parts.length > 0 ? parts.join(', ') : 'Unnamed Location';
   } catch {
     return 'Unnamed Location';
+  }
+}
+
+async function findExistingNotification(
+  adminId: number,
+  notificationData: {
+    type: 'checkin' | 'checkout' | 'alert' | 'system';
+    title: string;
+    message: string;
+    metadata?: Record<string, any>;
+  }
+): Promise<Notification | null> {
+  try {
+    let query = supabase
+      .from('notifications')
+      .select('*')
+      .eq('admin_id', adminId)
+      .eq('type', notificationData.type)
+      .order('created_at', { ascending: false })
+      .limit(1);
+
+    const attendanceId = notificationData.metadata?.attendance_id;
+    const event = notificationData.metadata?.event;
+
+    if (attendanceId != null) {
+      query = query.eq('metadata->>attendance_id', String(attendanceId));
+    } else {
+      query = query.eq('title', notificationData.title).eq('message', notificationData.message);
+    }
+
+    if (event != null) {
+      query = query.eq('metadata->>event', String(event));
+    }
+
+    const { data, error } = await query.maybeSingle();
+    if (error) return null;
+    return (data as Notification | null) || null;
+  } catch {
+    return null;
   }
 }
 
@@ -946,8 +1054,8 @@ export const adminApi = {
       }
 
       // Step 1: Get all currently checked-in employees for this admin.
-      // We do not apply a hard 24-hour cutoff here because the actual
-      // attendance rule is "active until next-day 5:00 AM local time".
+      // We intentionally do not apply a hard time cutoff here because an
+      // open row is only active until the earlier of 9 hours or IST midnight.
       const now = new Date();
 
       const { data: activeAttendance, error: attendanceError } = await db.attendance
@@ -1767,7 +1875,7 @@ export const adminApi = {
       }
 
       // Enrich notifications with employee data from metadata - batch query approach
-      const notifications = (data || []) as Notification[];
+      const notifications = dedupeNotifications((data || []) as Notification[]);
 
       // Collect all unique employee IDs from notification metadata
       const employeeIds = new Set<number>();
@@ -1947,6 +2055,12 @@ export const adminApi = {
         .single();
 
       if (error) {
+        if (error.code === '23505') {
+          const existingNotification = await findExistingNotification(adminId, notificationData);
+          if (existingNotification) {
+            return { success: true, data: existingNotification };
+          }
+        }
         return { success: false, error: error.message || 'Failed to create notification' };
       }
 
@@ -2359,7 +2473,7 @@ export const employeeApi = {
         return { success: false, error: 'Supabase is not configured' };
       }
 
-      const { data, error } = await supabase.rpc('auto_checkout_due_attendance_sessions');
+      const { data, error } = await supabase.rpc('auto_checkout_due_attendance');
 
       if (error) {
         return { success: false, error: error.message || 'Auto checkout failed' };
@@ -2372,7 +2486,7 @@ export const employeeApi = {
   },
 
   // Get current attendance (active check-in)
-  // AUTO-CHECKOUT: Open attendance stays active until 5:00 AM local time on the next day
+  // AUTO-CHECKOUT: Open attendance ends at the earlier of 9 hours or IST midnight
   async getCurrentAttendance(employeeId: number): Promise<ApiResponse<Attendance | null>> {
     try {
       if (!isSupabaseConfigured) {
@@ -2555,14 +2669,28 @@ export const employeeApi = {
         return { success: false, error: 'Supabase is not configured' };
       }
 
-      // OPTIMIZATION: Fetch only needed columns for notification
+      // Fetch enough context to resolve the correct checkout deadline and keep
+      // repeated auto-checkout attempts idempotent.
       const { data: attendanceData } = await db.attendance
-        .select('id, site_id, employee:employees(id, first_name, last_name, admin_id), site:work_sites(id, name)')
+        .select('id, site_id, check_in_time, check_in_latitude, check_in_longitude, check_in_location_name, check_out_time, employee:employees(id, first_name, last_name, admin_id), site:work_sites(id, name)')
         .eq('id', attendanceId)
         .eq('employee_id', employeeId)
         .single();
 
-      if (checkoutType === 'manual_checkout') {
+      const requestedCheckOutAt = new Date();
+      const deadlineAt = getAutoCheckoutDeadline((attendanceData as any)?.check_in_time || requestedCheckOutAt);
+      const deadlineHasPassed = requestedCheckOutAt.getTime() >= deadlineAt.getTime();
+      const effectiveCheckoutType: CheckoutType =
+        deadlineHasPassed ? 'auto_checkout' : checkoutType;
+      const effectiveCheckOutAt = new Date(
+        Math.min(requestedCheckOutAt.getTime(), deadlineAt.getTime())
+      );
+      const useStoredLocationForLateAutoCheckout = deadlineHasPassed;
+      const checkOutLocationName = useStoredLocationForLateAutoCheckout
+        ? ((attendanceData as any)?.check_in_location_name || 'Auto checkout')
+        : (location.locationName || await resolveLocationName(location));
+
+      if (checkoutType === 'manual_checkout' && !deadlineHasPassed) {
         const geofenceValidation = await validateAttendanceGeofence(employeeId, location);
         if (!geofenceValidation.success) {
           return {
@@ -2572,38 +2700,64 @@ export const employeeApi = {
         }
       }
 
-      const checkOutTime = new Date().toISOString();
-      const checkOutLocationName = location.locationName || await resolveLocationName(location);
       const baseUpdatePayload = {
-        check_out_time: checkOutTime,
-        check_out_latitude: location.latitude,
-        check_out_longitude: location.longitude,
+        check_out_time: effectiveCheckOutAt.toISOString(),
+        check_out_latitude: useStoredLocationForLateAutoCheckout
+          ? ((attendanceData as any)?.check_in_latitude ?? location.latitude)
+          : location.latitude,
+        check_out_longitude: useStoredLocationForLateAutoCheckout
+          ? ((attendanceData as any)?.check_in_longitude ?? location.longitude)
+          : location.longitude,
       };
 
       let updateResult = await db.attendance
         .update({
           ...baseUpdatePayload,
           check_out_location_name: checkOutLocationName,
-          checkout_type: checkoutType,
+          checkout_type: effectiveCheckoutType,
         })
         .eq('id', attendanceId)
         .eq('employee_id', employeeId)
-        .select('id, check_out_time, check_out_location_name, checkout_type, site:work_sites(id, name)')
-        .single();
+        .is('check_out_time', null)
+        .select('id, employee_id, site_id, check_in_time, check_out_time, check_out_location_name, checkout_type, site:work_sites(id, name)')
+        .maybeSingle();
 
       if (updateResult.error?.message?.includes('check_out_location_name') || updateResult.error?.message?.includes('checkout_type')) {
         updateResult = await db.attendance
           .update(baseUpdatePayload)
           .eq('id', attendanceId)
           .eq('employee_id', employeeId)
-          .select('id, check_out_time, site:work_sites(id, name)')
-          .single();
+          .is('check_out_time', null)
+          .select('id, employee_id, site_id, check_in_time, check_out_time, site:work_sites(id, name)')
+          .maybeSingle();
       }
 
       const { data, error } = updateResult;
 
       if (error) {
         return { success: false, error: error.message || 'Check-out failed' };
+      }
+
+      if (!data) {
+        const { data: existingClosedAttendance, error: existingClosedAttendanceError } = await db.attendance
+          .select('id, employee_id, site_id, check_in_time, check_out_time, check_out_location_name, checkout_type, site:work_sites(id, name)')
+          .eq('id', attendanceId)
+          .eq('employee_id', employeeId)
+          .not('check_out_time', 'is', null)
+          .maybeSingle();
+
+        if (existingClosedAttendanceError) {
+          return {
+            success: false,
+            error: existingClosedAttendanceError.message || 'Check-out failed',
+          };
+        }
+
+        if (existingClosedAttendance) {
+          return { success: true, data: existingClosedAttendance as unknown as Attendance };
+        }
+
+        return { success: false, error: 'Attendance is already checked out.' };
       }
 
       // OPTIMIZATION: REMOVED location_tracking insert on check-out
@@ -2628,9 +2782,9 @@ export const employeeApi = {
                 employee_id: employeeId,
                 attendance_id: attendanceId,
                 site_id: siteId,
-                check_out_time: checkOutTime,
+                check_out_time: data.check_out_time,
                 check_out_location_name: (data as any)?.check_out_location_name,
-                checkout_type: checkoutType,
+                checkout_type: effectiveCheckoutType,
               },
             });
 
@@ -2921,38 +3075,63 @@ export const employeeApi = {
         !isOnSite &&
         currentAttendance.data.id
       ) {
-        const distance = checkGeofence(location, activeSite as WorkSite).distance;
-        const thirtyMinutesAgo = new Date(Date.now() - 30 * 60 * 1000).toISOString();
-        const { data: existingExitAlerts } = await db.notifications
-          .select('id')
-          .eq('admin_id', employee.admin_id)
-          .eq('type', 'alert')
-          .eq('metadata->>attendance_id', String(currentAttendance.data.id))
-          .eq('metadata->>event', 'geofence_exit')
-          .gte('created_at', thirtyMinutesAgo)
-          .limit(1);
+        const attendanceKey = Number(currentAttendance.data.id);
 
-        if (!existingExitAlerts || existingExitAlerts.length === 0) {
-          await adminApi.createNotification(employee.admin_id, {
-            type: 'alert',
-            title: 'Geofence Exit Alert',
-            message: `${employee.first_name} ${employee.last_name} left ${activeSite.name}. Distance: ${Math.round(distance)}m`,
-            metadata: {
-              event: 'geofence_exit',
-              employee_id: employeeId,
-              attendance_id: currentAttendance.data.id,
-              site_id: activeSite.id,
-              distance: Math.round(distance),
-              exited_at: recordTimestamp,
-            },
-          });
+        if (pendingAutoCheckoutAttendanceIds.has(attendanceKey)) {
+          return { success: true, data: (latestRow as LocationTracking) || undefined };
         }
 
-        await this.autoCheckoutAttendance(employeeId, currentAttendance.data.id, {
-          latitude: location.latitude,
-          longitude: location.longitude,
-          locationName: await resolveLocationName(location),
-        });
+        pendingAutoCheckoutAttendanceIds.add(attendanceKey);
+
+        try {
+          const distance = checkGeofence(location, activeSite as WorkSite).distance;
+          const thirtyMinutesAgo = new Date(Date.now() - 30 * 60 * 1000).toISOString();
+          const { data: existingExitAlerts } = await db.notifications
+            .select('id')
+            .eq('admin_id', employee.admin_id)
+            .eq('type', 'alert')
+            .eq('metadata->>attendance_id', String(currentAttendance.data.id))
+            .eq('metadata->>event', 'geofence_exit')
+            .gte('created_at', thirtyMinutesAgo)
+            .limit(1);
+
+          if (!existingExitAlerts || existingExitAlerts.length === 0) {
+            await adminApi.createNotification(employee.admin_id, {
+              type: 'alert',
+              title: 'Geofence Exit Alert',
+              message: `${employee.first_name} ${employee.last_name} left ${activeSite.name}. Distance: ${Math.round(distance)}m`,
+              metadata: {
+                event: 'geofence_exit',
+                employee_id: employeeId,
+                attendance_id: currentAttendance.data.id,
+                site_id: activeSite.id,
+                distance: Math.round(distance),
+                exited_at: recordTimestamp,
+              },
+            });
+          }
+
+          const autoCheckoutResult = await this.autoCheckoutAttendance(employeeId, currentAttendance.data.id, {
+            latitude: location.latitude,
+            longitude: location.longitude,
+            locationName: await resolveLocationName(location),
+          });
+
+          if (autoCheckoutResult.success) {
+            return {
+              success: true,
+              data: (latestRow as LocationTracking) || {
+                employee_id: employeeId,
+                latitude: location.latitude,
+                longitude: location.longitude,
+                is_on_site: false,
+                timestamp: nextTimestamp,
+              } as LocationTracking,
+            };
+          }
+        } finally {
+          pendingAutoCheckoutAttendanceIds.delete(attendanceKey);
+        }
       }
 
       const payload = {
