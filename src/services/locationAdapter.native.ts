@@ -7,10 +7,11 @@ import {
   PlatformLocationWatchOptions,
 } from './locationAdapter.types';
 
-const DEFAULT_TIMEOUT_MS = 12000;
-const DEFAULT_TARGET_ACCURACY = 20;
-const MAX_CACHED_LOCATION_AGE_MS = 10000;
-const MAX_CACHED_LOCATION_ACCURACY = 35;
+const DEFAULT_TIMEOUT_MS = 4500;
+const DEFAULT_TARGET_ACCURACY = 50;
+const DEFAULT_MAX_CACHED_LOCATION_AGE_MS = 20000;
+const DEFAULT_RETRY_COUNT = 1;
+const DEFAULT_RETRY_DELAY_MS = 700;
 
 function withTimeout<T>(promise: Promise<T>, timeoutMs: number) {
   let timeoutId: ReturnType<typeof setTimeout> | null = null;
@@ -38,6 +39,12 @@ function toResult(location: Location.LocationObject): PlatformLocationResult {
   };
 }
 
+function sleep(ms: number) {
+  return new Promise<void>((resolve) => {
+    setTimeout(resolve, ms);
+  });
+}
+
 export async function requestPlatformLocationPermission(): Promise<LocationPermissionResult> {
   const { status, canAskAgain } = await Location.requestForegroundPermissionsAsync();
   return {
@@ -54,11 +61,14 @@ export async function getPlatformCurrentLocation(
     preferCached = true,
     targetAccuracy = DEFAULT_TARGET_ACCURACY,
     timeoutMs = DEFAULT_TIMEOUT_MS,
+    maxAgeMs = DEFAULT_MAX_CACHED_LOCATION_AGE_MS,
+    retryCount = DEFAULT_RETRY_COUNT,
+    retryDelayMs = DEFAULT_RETRY_DELAY_MS,
   } = options || {};
 
   const cached = await Location.getLastKnownPositionAsync({
-    maxAge: MAX_CACHED_LOCATION_AGE_MS,
-    requiredAccuracy: MAX_CACHED_LOCATION_ACCURACY,
+    maxAge: maxAgeMs,
+    requiredAccuracy: targetAccuracy,
   });
 
   const cachedAccuracy = cached?.coords.accuracy ?? Infinity;
@@ -67,27 +77,22 @@ export async function getPlatformCurrentLocation(
   const canUseCached =
     preferCached &&
     !!cached &&
-    cachedAgeMs <= MAX_CACHED_LOCATION_AGE_MS &&
-    cachedAccuracy <= Math.min(MAX_CACHED_LOCATION_ACCURACY, targetAccuracy + 10);
+    cachedAgeMs <= maxAgeMs &&
+    cachedAccuracy <= targetAccuracy;
 
   if (canUseCached && cached) {
     return toResult(cached);
   }
 
-  const attemptOrder = [
-    Location.Accuracy.Balanced,
-    Location.Accuracy.High,
-    Location.Accuracy.Highest,
-  ];
-
   let bestLocation: Location.LocationObject | null = null;
   let bestAccuracy = Infinity;
+  let lastError: Error | null = null;
 
-  for (const accuracyLevel of attemptOrder) {
+  for (let attempt = 0; attempt <= retryCount; attempt += 1) {
     try {
       const nextLocation = await withTimeout(
         Location.getCurrentPositionAsync({
-          accuracy: accuracyLevel,
+          accuracy: Location.Accuracy.Balanced,
         }),
         timeoutMs
       );
@@ -101,13 +106,17 @@ export async function getPlatformCurrentLocation(
       if (bestAccuracy <= targetAccuracy) {
         break;
       }
-    } catch {
-      // Keep the best successful fix gathered so far.
+    } catch (error: any) {
+      lastError = error instanceof Error ? error : new Error('Location unavailable');
+    }
+
+    if (attempt < retryCount) {
+      await sleep(retryDelayMs);
     }
   }
 
   if (!bestLocation) {
-    throw new Error('Location unavailable');
+    throw lastError || new Error('Location unavailable');
   }
 
   return toResult(bestLocation);
@@ -119,7 +128,7 @@ export async function watchPlatformLocation(
 ): Promise<PlatformLocationSubscription> {
   const subscription = await Location.watchPositionAsync(
     {
-      accuracy: Location.Accuracy.High,
+      accuracy: Location.Accuracy.Balanced,
       distanceInterval: options.distanceInterval ?? 5,
       timeInterval: options.timeInterval ?? 5000,
     },

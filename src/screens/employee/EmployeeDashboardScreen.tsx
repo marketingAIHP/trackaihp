@@ -12,6 +12,7 @@ import { MaterialCommunityIcons as Icon } from '@expo/vector-icons';
 import { colors } from '../../theme/colors';
 import { useNavigation } from '@react-navigation/native';
 import LocationTrackingService from '../../services/LocationTrackingService';
+import { useLocation } from '../../hooks/useLocation';
 
 export const EmployeeDashboardScreen: React.FC = () => {
   const theme = useTheme();
@@ -21,6 +22,7 @@ export const EmployeeDashboardScreen: React.FC = () => {
   const { width } = useWindowDimensions();
   const isWeb = Platform.OS === 'web';
   const isWideWeb = isWeb && width >= 768;
+  const { primeLocation } = useLocation();
 
   const { data: profile, isLoading: profileLoading } = useQuery({
     queryKey: ['employee', 'profile', employeeId],
@@ -94,17 +96,12 @@ export const EmployeeDashboardScreen: React.FC = () => {
   // Ensure location tracking is active and send fresh location when dashboard is opened
   useFocusEffect(
     React.useCallback(() => {
-      if (currentAttendance) {
-        // Resume tracking if needed (in case it stopped) (handled internally via check/start idempotency if needed, or rely on persistent task)
-        // Ideally we just check if it's active
-        LocationTrackingService.isTrackingActive().then(active => {
-          // Optional: visual indicator update
-        });
+      void primeLocation();
 
-        // Force send fresh location immediately when dashboard opens
-        LocationTrackingService.forceOneTimeUpdate();
+      if (currentAttendance) {
+        void LocationTrackingService.forceOneTimeUpdate();
       }
-    }, [currentAttendance])
+    }, [currentAttendance, primeLocation])
   );
 
   const isLoading = profileLoading || attendanceLoading;

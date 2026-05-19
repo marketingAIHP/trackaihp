@@ -19,6 +19,7 @@ import { useNotificationListener } from './hooks/useNotificationListener';
 import AppStateMonitor from './services/AppStateMonitor';
 import LocationTrackingService from './services/LocationTrackingService';
 import { linking } from './navigation/linking';
+import { LocationProvider } from './providers/LocationProvider';
 
 // Production-optimized QueryClient configuration - AGGRESSIVE caching to reduce DB load
 const queryClient = new QueryClient({
@@ -129,7 +130,9 @@ function AppContent() {
         ) : currentUser.type === 'admin' ? (
           <AdminNavigator />
         ) : (
-          <EmployeeNavigator />
+          <LocationProvider>
+            <EmployeeNavigator />
+          </LocationProvider>
         )}
       </NavigationContainer>
     </PaperProvider>

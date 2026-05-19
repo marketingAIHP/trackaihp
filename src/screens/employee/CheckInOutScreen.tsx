@@ -175,12 +175,18 @@ export const CheckInOutScreen: React.FC = () => {
     error: locationError,
     permissionGranted,
     getCurrentLocationSnapshot,
+    refreshLocation: refreshCachedLocation,
+    primeLocation,
   } = useLocation();
 
   useEffect(() => {
     const timer = setInterval(() => setNow(Date.now()), 1000);
     return () => clearInterval(timer);
   }, []);
+
+  useEffect(() => {
+    void primeLocation();
+  }, [primeLocation]);
 
   const profileQuery = useQuery({
     queryKey: ['employee', 'profile', employeeId],
@@ -347,15 +353,16 @@ export const CheckInOutScreen: React.FC = () => {
   const refreshLocation = useCallback(async () => {
     setIsRefreshingLocation(true);
     try {
-      await getCurrentLocationSnapshot({
-        preferCached: false,
+      await refreshCachedLocation({
         targetAccuracy: ATTENDANCE_GPS_ACCURACY_THRESHOLD,
-        timeoutMs: 15000,
+        timeoutMs: 5000,
+        retryCount: 1,
+        allowStaleFallback: false,
       });
     } finally {
       setIsRefreshingLocation(false);
     }
-  }, [getCurrentLocationSnapshot]);
+  }, [refreshCachedLocation]);
 
   const getDetectedSiteForSnapshot = useCallback((snapshot: LocationSnapshot) => {
     if (profile?.remote_work) {
@@ -369,9 +376,12 @@ export const CheckInOutScreen: React.FC = () => {
     actionLabel: 'check in' | 'check out'
   ): Promise<{ snapshot: LocationSnapshot; detectedSite: NearbyWorkSiteMatch | null } | null> => {
     const snapshot = await getCurrentLocationSnapshot({
-      preferCached: false,
+      preferCached: true,
       targetAccuracy: ATTENDANCE_GPS_ACCURACY_THRESHOLD,
-      timeoutMs: 15000,
+      maxAgeMs: 20000,
+      timeoutMs: 4500,
+      retryCount: 1,
+      allowStaleFallback: true,
     });
 
     if (!snapshot) {
@@ -592,7 +602,7 @@ export const CheckInOutScreen: React.FC = () => {
                 <View style={styles.locationHeaderContent}>
                   <Text variant="titleMedium" style={styles.sectionTitle}>Current Location</Text>
                   <Text variant="bodySmall" style={styles.muted}>
-                    Fresh GPS is fetched again when you check in or out.
+                    Cached GPS stays warm while the app is open for faster attendance.
                   </Text>
                 </View>
                 <Button
@@ -622,7 +632,7 @@ export const CheckInOutScreen: React.FC = () => {
                 </View>
               ) : (
                 <Text variant="bodyMedium" style={styles.emptyText}>
-                  {locationLoading ? 'Fetching location...' : 'Location not fetched yet'}
+                  {locationLoading ? 'Warming up GPS cache...' : 'Waiting for cached location...'}
                 </Text>
               )}
 
@@ -655,7 +665,7 @@ export const CheckInOutScreen: React.FC = () => {
               loading={isProcessingAttendance && !hasActiveSession}
               onPress={handleCheckIn}
               style={styles.actionButton}>
-              {isProcessingAttendance && !hasActiveSession ? 'Getting Location...' : 'Check In'}
+              {isProcessingAttendance && !hasActiveSession ? 'Checking In...' : 'Check In'}
             </Button>
             <Button
               mode="contained-tonal"
@@ -664,7 +674,7 @@ export const CheckInOutScreen: React.FC = () => {
               loading={isProcessingAttendance && hasActiveSession}
               onPress={handleCheckOut}
               style={styles.actionButton}>
-              {isProcessingAttendance && hasActiveSession ? 'Getting Location...' : 'Check Out'}
+              {isProcessingAttendance && hasActiveSession ? 'Checking Out...' : 'Check Out'}
             </Button>
           </View>
 

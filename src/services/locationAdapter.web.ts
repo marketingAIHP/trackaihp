@@ -78,6 +78,7 @@ export async function getPlatformCurrentLocation(
 
   const timeoutMs = options?.timeoutMs ?? DEFAULT_TIMEOUT_MS;
   const preferCached = options?.preferCached ?? true;
+  const maxAgeMs = options?.maxAgeMs ?? 20000;
 
   return new Promise<PlatformLocationResult>((resolve, reject) => {
     navigator.geolocation.getCurrentPosition(
@@ -98,8 +99,8 @@ export async function getPlatformCurrentLocation(
         reject(new Error(error.message || 'Failed to get location'));
       },
       {
-        enableHighAccuracy: true,
-        maximumAge: preferCached ? 10000 : 0,
+        enableHighAccuracy: false,
+        maximumAge: preferCached ? maxAgeMs : 0,
         timeout: timeoutMs,
       }
     );
@@ -118,7 +119,7 @@ export async function watchPlatformLocation(
       // Hook state handles stale/error messaging from explicit reads.
     },
     {
-      enableHighAccuracy: true,
+      enableHighAccuracy: false,
       maximumAge: 0,
       timeout: options.timeInterval ?? 5000,
     }

@@ -25,7 +25,11 @@ import {
   CheckoutType,
   SiteAttendanceSummary,
 } from '../types';
-import { STORAGE_BUCKETS, SUPABASE_ANON_KEY } from '../constants/config';
+import {
+  ATTENDANCE_GPS_ACCURACY_THRESHOLD,
+  STORAGE_BUCKETS,
+  SUPABASE_ANON_KEY,
+} from '../constants/config';
 import { deleteImage } from '../utils/storage';
 import {
   checkGeofence,
@@ -457,7 +461,7 @@ async function validateAttendanceGeofence(
   if (!isGpsAccurateEnough(location.accuracy)) {
     return {
       success: false,
-      error: 'GPS accuracy must be 30m or better to check in or check out. Please wait for a stronger location fix.',
+      error: `GPS accuracy must be ${ATTENDANCE_GPS_ACCURACY_THRESHOLD}m or better to check in or check out. Please wait for a stronger location fix.`,
     };
   }
 

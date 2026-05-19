@@ -16,6 +16,9 @@ export interface PlatformLocationOptions {
   preferCached?: boolean;
   targetAccuracy?: number;
   timeoutMs?: number;
+  maxAgeMs?: number;
+  retryCount?: number;
+  retryDelayMs?: number;
 }
 
 export interface PlatformLocationWatchOptions {

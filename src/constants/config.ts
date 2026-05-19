@@ -38,7 +38,7 @@ export const IS_DEVELOPMENT = __DEV__;
 // GPS Configuration
 export const GPS_UPDATE_INTERVAL = 30000;
 export const GPS_ACCURACY_BUFFER = 15;
-export const ATTENDANCE_GPS_ACCURACY_THRESHOLD = 30;
+export const ATTENDANCE_GPS_ACCURACY_THRESHOLD = 50;
 export const DEFAULT_GEOFENCE_RADIUS = 200;
 
 // Production optimizations
