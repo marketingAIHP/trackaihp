@@ -1,5 +1,5 @@
 import {useState, useEffect, useCallback, useRef} from 'react';
-import {Coordinates} from '../types';
+import {Coordinates, LocationSnapshot} from '../types';
 import {
   getPlatformCurrentLocation,
   requestPlatformLocationPermission,
@@ -37,6 +37,23 @@ interface GetCurrentLocationOptions {
   timeoutMs?: number;
 }
 
+function hasMeaningfulLocationChange(
+  previous: Coordinates | null,
+  next: Coordinates,
+  previousAccuracy: number | null,
+  nextAccuracy: number | null
+): boolean {
+  if (!previous) return true;
+
+  const distanceMoved = calculateDistance(previous, next);
+  const accuracyChanged =
+    previousAccuracy === null ||
+    nextAccuracy === null ||
+    Math.abs(previousAccuracy - nextAccuracy) >= 5;
+
+  return distanceMoved >= 3 || accuracyChanged;
+}
+
 function calculateDistance(coord1: Coordinates, coord2: Coordinates): number {
   const R = 6371e3;
   const lat1Rad = (coord1.latitude * Math.PI) / 180;
@@ -63,86 +80,142 @@ export function useLocation() {
 
   const lastSentLocationRef = useRef<ThrottledLocationUpdate | null>(null);
   const watchSubscriptionRef = useRef<PlatformLocationSubscription | null>(null);
+  const isMountedRef = useRef(true);
+  const inFlightLocationRequestRef = useRef<Promise<LocationSnapshot | null> | null>(null);
+
+  useEffect(() => {
+    return () => {
+      isMountedRef.current = false;
+    };
+  }, []);
 
   const requestPermissions = useCallback(async (): Promise<boolean> => {
     try {
       const permission = await requestPlatformLocationPermission();
-      setLocationState((prev) => ({
-        ...prev,
-        permissionGranted: permission.granted,
-        error: permission.granted ? prev.error : prev.error ?? 'Location permission denied',
-      }));
+      if (isMountedRef.current) {
+        setLocationState((prev) => ({
+          ...prev,
+          permissionGranted: permission.granted,
+          error: permission.granted ? prev.error : prev.error ?? 'Location permission denied',
+        }));
+      }
       return permission.granted;
     } catch (error: any) {
-      setLocationState((prev) => ({
-        ...prev,
-        permissionGranted: false,
-        error: error?.message || 'Geolocation is not supported in this browser',
-      }));
+      if (isMountedRef.current) {
+        setLocationState((prev) => ({
+          ...prev,
+          permissionGranted: false,
+          error: error?.message || 'Geolocation is not supported in this browser',
+        }));
+      }
       return false;
     }
   }, []);
 
-  const getCurrentLocation = useCallback(async (
+  const getCurrentLocationSnapshot = useCallback(async (
     options?: GetCurrentLocationOptions
-  ): Promise<Coordinates | null> => {
+  ): Promise<LocationSnapshot | null> => {
+    if (inFlightLocationRequestRef.current) {
+      return inFlightLocationRequestRef.current;
+    }
+
     const {
       preferCached = true,
       targetAccuracy = HIGH_ACCURACY_THRESHOLD,
       timeoutMs = 12000,
     } = options || {};
 
-    const hasPermission = await requestPermissions();
-    if (!hasPermission) {
-      setLocationState({
-        coordinates: null,
-        error: 'Location permission denied',
-        loading: false,
-        accuracy: null,
-        permissionGranted: false,
-      });
-      return null;
-    }
+    const requestPromise = (async () => {
+      const hasPermission = await requestPermissions();
+      if (!hasPermission) {
+        if (isMountedRef.current) {
+          setLocationState({
+            coordinates: null,
+            error: 'Location permission denied',
+            loading: false,
+            accuracy: null,
+            permissionGranted: false,
+          });
+        }
+        return null;
+      }
 
-    try {
-      setLocationState((prev) => ({...prev, loading: true, error: null}));
+      try {
+        if (isMountedRef.current) {
+          setLocationState((prev) => ({...prev, loading: true, error: null}));
+        }
 
-      const location = await getPlatformCurrentLocation({
-        preferCached,
-        targetAccuracy,
-        timeoutMs,
-      });
+        const location = await getPlatformCurrentLocation({
+          preferCached,
+          targetAccuracy,
+          timeoutMs,
+        });
 
-      setLocationState({
-        coordinates: location.coordinates,
-        error: null,
-        loading: false,
-        accuracy: location.accuracy,
-        permissionGranted: true,
-      });
-      return location.coordinates;
-    } catch (error: any) {
-      const errorMessage =
-        error.code === 'E_LOCATION_SERVICES_DISABLED'
-          ? 'Location services are disabled'
-          : error.code === 'E_LOCATION_UNAVAILABLE'
-          ? 'Location unavailable'
-          : error.message === 'timeout'
-          ? 'Location request timed out'
-          : error.message?.includes('not supported')
-          ? 'Geolocation is not supported in this browser'
-          : error.message || 'Failed to get location';
+        if (isMountedRef.current) {
+          setLocationState((prev) => {
+            const shouldUpdate = hasMeaningfulLocationChange(
+              prev.coordinates,
+              location.coordinates,
+              prev.accuracy,
+              location.accuracy
+            );
 
-      setLocationState((prev) => ({
-        coordinates: prev.coordinates,
-        error: prev.coordinates ? null : errorMessage,
-        loading: false,
-        accuracy: prev.accuracy,
-        permissionGranted: prev.permissionGranted,
-      }));
-      return null;
-    }
+            if (!shouldUpdate && prev.error === null && prev.loading === false && prev.permissionGranted === true) {
+              return prev;
+            }
+
+            return {
+              coordinates: shouldUpdate ? location.coordinates : prev.coordinates,
+              error: null,
+              loading: false,
+              accuracy: location.accuracy,
+              permissionGranted: true,
+            };
+          });
+        }
+
+        return {
+          coordinates: location.coordinates,
+          accuracy: location.accuracy,
+          timestamp: location.timestamp,
+        };
+      } catch (error: any) {
+        const errorMessage =
+          error.code === 'E_LOCATION_SERVICES_DISABLED'
+            ? 'Location services are disabled'
+            : error.code === 'E_LOCATION_UNAVAILABLE'
+            ? 'Location unavailable'
+            : error.message === 'timeout'
+            ? 'Location request timed out'
+            : error.message?.includes('not supported')
+            ? 'Geolocation is not supported in this browser'
+            : error.message || 'Failed to get location';
+
+        if (isMountedRef.current) {
+          setLocationState((prev) => ({
+            coordinates: prev.coordinates,
+            error: prev.coordinates ? null : errorMessage,
+            loading: false,
+            accuracy: prev.accuracy,
+            permissionGranted: prev.permissionGranted,
+          }));
+        }
+        return null;
+      } finally {
+        inFlightLocationRequestRef.current = null;
+      }
+    })();
+
+    inFlightLocationRequestRef.current = requestPromise;
+    return requestPromise;
   }, [requestPermissions]);
+
+  const getCurrentLocation = useCallback(async (
+    options?: GetCurrentLocationOptions
+  ): Promise<Coordinates | null> => {
+    const snapshot = await getCurrentLocationSnapshot(options);
+    return snapshot?.coordinates ?? null;
+  }, [getCurrentLocationSnapshot]);
 
   const watchLocation = useCallback(
     (callback: (coords: Coordinates) => void) => {
@@ -178,13 +251,28 @@ export function useLocation() {
 
             const coords = location.coordinates;
 
-            setLocationState({
-              coordinates: coords,
-              error: null,
-              loading: false,
-              accuracy,
-              permissionGranted: true,
-            });
+            if (isMountedRef.current) {
+              setLocationState((prev) => {
+                const shouldUpdate = hasMeaningfulLocationChange(
+                  prev.coordinates,
+                  coords,
+                  prev.accuracy,
+                  accuracy
+                );
+
+                if (!shouldUpdate && prev.error === null && prev.loading === false && prev.permissionGranted === true) {
+                  return prev;
+                }
+
+                return {
+                  coordinates: shouldUpdate ? coords : prev.coordinates,
+                  error: null,
+                  loading: false,
+                  accuracy,
+                  permissionGranted: true,
+                };
+              });
+            }
 
             const now = Date.now();
             const lastSent = lastSentLocationRef.current;
@@ -272,6 +360,7 @@ export function useLocation() {
   return {
     ...locationState,
     getCurrentLocation,
+    getCurrentLocationSnapshot,
     watchLocation,
     stopWatching,
     requestPermissions,

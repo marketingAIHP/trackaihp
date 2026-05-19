@@ -60,6 +60,8 @@ const STORAGE_KEYS = {
 // =============================================================================
 
 let isStartingTracking = false;
+let isForceUpdatingLocation = false;
+let isSendingForegroundLocation = false;
 let appStateSubscription: any = null;
 let watchSubscription: Location.LocationSubscription | null = null;
 let lastSentTs = 0;
@@ -135,7 +137,7 @@ function recordSent(lat: number, lng: number): void {
 }
 
 // =============================================================================
-// FAST LOCATION ACQUISITION — race Balanced vs High, take the fastest
+// FAST LOCATION ACQUISITION — step up accuracy only when needed
 // =============================================================================
 
 async function getFastCurrentLocation(): Promise<Location.LocationObject> {
@@ -145,31 +147,40 @@ async function getFastCurrentLocation(): Promise<Location.LocationObject> {
   });
   if (cached) return cached;
 
-  const balancedPromise = Location.getCurrentPositionAsync({
-    accuracy: Location.Accuracy.Balanced,
-  });
-  const highPromise = Location.getCurrentPositionAsync({
-    accuracy: Location.Accuracy.High,
-  });
+  const accuracyLevels = [
+    Location.Accuracy.Balanced,
+    Location.Accuracy.High,
+    Location.Accuracy.Highest,
+  ];
 
-  const first = await Promise.race([balancedPromise, highPromise]);
-  const firstAccuracy = first.coords.accuracy ?? Infinity;
+  let bestLocation: Location.LocationObject | null = null;
+  let bestAccuracy = Infinity;
 
-  if (firstAccuracy <= 20) {
-    return first;
+  for (const accuracyLevel of accuracyLevels) {
+    try {
+      const nextLocation = await Location.getCurrentPositionAsync({
+        accuracy: accuracyLevel,
+      });
+      const nextAccuracy = nextLocation.coords.accuracy ?? Infinity;
+
+      if (nextAccuracy <= bestAccuracy) {
+        bestLocation = nextLocation;
+        bestAccuracy = nextAccuracy;
+      }
+
+      if (bestAccuracy <= 20) {
+        break;
+      }
+    } catch {
+      // Keep the best successful fix gathered so far.
+    }
   }
 
-  try {
-    const better = await Promise.race([
-      highPromise,
-      Location.getCurrentPositionAsync({
-        accuracy: Location.Accuracy.Highest,
-      }),
-    ]);
-    return (better.coords.accuracy ?? Infinity) <= firstAccuracy ? better : first;
-  } catch {
-    return first;
+  if (!bestLocation) {
+    throw new Error('Location unavailable');
   }
+
+  return bestLocation;
 }
 
 // =============================================================================
@@ -177,6 +188,11 @@ async function getFastCurrentLocation(): Promise<Location.LocationObject> {
 // =============================================================================
 
 async function sendLocation(lat: number, lng: number, employeeId: number, siteId?: number): Promise<void> {
+  if (isSendingForegroundLocation) {
+    return;
+  }
+
+  isSendingForegroundLocation = true;
   const timestamp = new Date().toISOString();
   try {
     const result = await employeeApi.updateLiveLocation(
@@ -197,6 +213,8 @@ async function sendLocation(lat: number, lng: number, employeeId: number, siteId
   } catch (err: any) {
     await log(`❌ Network error: ${err.message}`);
     await AsyncStorage.setItem(STORAGE_KEYS.LAST_ERROR, err.message || 'Network error');
+  } finally {
+    isSendingForegroundLocation = false;
   }
 }
 
@@ -359,6 +377,7 @@ const LocationTrackingService = {
     lastSentTs = 0;
     lastSentLat = null;
     lastSentLng = null;
+    isSendingForegroundLocation = false;
 
     await AsyncStorage.multiRemove([
       STORAGE_KEYS.IS_TRACKING,
@@ -402,6 +421,12 @@ const LocationTrackingService = {
    * Used on check-in start and when app returns to foreground.
    */
   async forceOneTimeUpdate(): Promise<void> {
+    if (isForceUpdatingLocation) {
+      return;
+    }
+
+    isForceUpdatingLocation = true;
+
     try {
       const employeeIdStr = await AsyncStorage.getItem(STORAGE_KEYS.EMPLOYEE_ID);
       if (!employeeIdStr) return;
@@ -417,6 +442,8 @@ const LocationTrackingService = {
       await sendLocation(latitude, longitude, employeeId, siteId);
     } catch (err: any) {
       await log(`❌ Force update error: ${err.message}`);
+    } finally {
+      isForceUpdatingLocation = false;
     }
   },
 

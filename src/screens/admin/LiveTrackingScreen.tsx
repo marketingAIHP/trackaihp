@@ -1,4 +1,4 @@
-import React, { useState, useEffect, useCallback } from 'react';
+import React, { useState, useEffect, useCallback, useMemo } from 'react';
 import { View, StyleSheet, TouchableOpacity, ScrollView, Platform, Linking } from 'react-native';
 import { SafeAreaView } from 'react-native-safe-area-context';
 import { Text, ActivityIndicator, Button, useTheme } from 'react-native-paper';
@@ -76,33 +76,41 @@ export const LiveTrackingScreen: React.FC = () => {
     staleTime: 0,
     refetchOnMount: 'always',
     gcTime: 30 * 1000,
-    refetchInterval: 5 * 1000, // Safety-net poll — tighter for live sharing UX
+    refetchInterval: 15 * 1000, // Safety-net poll while realtime handles most updates
   });
 
   // Real-time subscription for immediate location updates
   useEffect(() => {
     if (!adminId) return;
 
-    const patchCachedLocation = (row: any) => {
-      queryClient.setQueryData(['admin', 'locations', adminId, employeeId], (previous: LocationTracking[] | undefined) => {
-        if (!previous || previous.length === 0) return previous;
+    const patchCachedLocation = (row: any): boolean => {
+      let didPatch = false;
 
-        let didPatch = false;
-        const next = previous.map((item) => {
-          if (item.employee_id !== row.employee_id) return item;
-          didPatch = true;
-          return {
-            ...item,
-            id: row.id,
-            latitude: row.latitude,
-            longitude: row.longitude,
-            is_on_site: row.is_on_site,
-            timestamp: row.timestamp,
-          };
-        });
+      queryClient.setQueryData(
+        ['admin', 'locations', adminId, employeeId],
+        (previous: LocationTracking[] | undefined) => {
+          if (!previous || previous.length === 0) {
+            return previous;
+          }
 
-        return didPatch ? next : previous;
-      });
+          const next = previous.map((item) => {
+            if (item.employee_id !== row.employee_id) return item;
+            didPatch = true;
+            return {
+              ...item,
+              id: row.id,
+              latitude: row.latitude,
+              longitude: row.longitude,
+              is_on_site: row.is_on_site,
+              timestamp: row.timestamp,
+            };
+          });
+
+          return didPatch ? next : previous;
+        }
+      );
+
+      return didPatch;
     };
 
     // Listen for changes to location_tracking for any employee this admin manages
@@ -111,15 +119,19 @@ export const LiveTrackingScreen: React.FC = () => {
       .on('postgres_changes',
         { event: 'INSERT', schema: 'public', table: 'location_tracking' },
         (payload) => {
-          patchCachedLocation(payload.new);
-          refetch();
+          const didPatch = patchCachedLocation(payload.new);
+          if (!didPatch) {
+            void refetch();
+          }
         }
       )
       .on('postgres_changes',
         { event: 'UPDATE', schema: 'public', table: 'location_tracking' },
         (payload) => {
-          patchCachedLocation(payload.new);
-          refetch();
+          const didPatch = patchCachedLocation(payload.new);
+          if (!didPatch) {
+            void refetch();
+          }
         }
       )
       .subscribe();
@@ -130,19 +142,23 @@ export const LiveTrackingScreen: React.FC = () => {
   }, [adminId, employeeId, queryClient, refetch]);
 
   // Ensure locations is always an array (not undefined)
-  const safeLocations = [...(locations || [])].sort((a, b) => {
-    const aName = a.employee ? `${a.employee.first_name} ${a.employee.last_name}` : '';
-    const bName = b.employee ? `${b.employee.first_name} ${b.employee.last_name}` : '';
-    return aName.localeCompare(bName);
-  });
+  const safeLocations = useMemo(() => {
+    return [...(locations || [])].sort((a, b) => {
+      const aName = a.employee ? `${a.employee.first_name} ${a.employee.last_name}` : '';
+      const bName = b.employee ? `${b.employee.first_name} ${b.employee.last_name}` : '';
+      return aName.localeCompare(bName);
+    });
+  }, [locations]);
 
-  const latestLocation = safeLocations.reduce<LocationTracking | null>((latest, current) => {
-    if (!latest) return current;
+  const latestLocation = useMemo(() => {
+    return safeLocations.reduce<LocationTracking | null>((latest, current) => {
+      if (!latest) return current;
 
-    const latestTs = parseTimestamp(latest.timestamp).getTime();
-    const currentTs = parseTimestamp(current.timestamp).getTime();
-    return currentTs > latestTs ? current : latest;
-  }, null);
+      const latestTs = parseTimestamp(latest.timestamp).getTime();
+      const currentTs = parseTimestamp(current.timestamp).getTime();
+      return currentTs > latestTs ? current : latest;
+    }, null);
+  }, [safeLocations]);
 
   // Handle refresh button press - forces a fresh fetch of location data
   const handleRefresh = useCallback(async () => {
@@ -156,18 +172,18 @@ export const LiveTrackingScreen: React.FC = () => {
     } finally {
       setIsRefreshing(false);
     }
-  }, [queryClient, adminId, employeeId, refetch]);
+  }, [refetch]);
 
   // Calculate map center
-  const mapCenter = selectedLocation || (latestLocation
-    ? { latitude: Number(latestLocation.latitude), longitude: Number(latestLocation.longitude) }
-    : { latitude: 37.78825, longitude: -122.4324 }); // Default fallback
+  const mapCenter = useMemo(() => {
+    return selectedLocation || (latestLocation
+      ? { latitude: Number(latestLocation.latitude), longitude: Number(latestLocation.longitude) }
+      : { latitude: 37.78825, longitude: -122.4324 });
+  }, [latestLocation, selectedLocation]);
 
   // Prepare markers for map
-  const mapMarkers = safeLocations.map((loc: LocationTracking) => {
-    // Debug marker timestamps
-    // // console.log(`[Marker ${loc.employee_id}] TS: ${loc.timestamp}`);
-    return {
+  const mapMarkers = useMemo(() => {
+    return safeLocations.map((loc: LocationTracking) => ({
       id: loc.employee_id,
       latitude: Number(loc.latitude),
       longitude: Number(loc.longitude),
@@ -179,9 +195,9 @@ export const LiveTrackingScreen: React.FC = () => {
       employeeName: loc.employee ? `${loc.employee.first_name} ${loc.employee.last_name}` : 'Unknown',
       siteName: loc.site?.name,
       currentStatus: loc.current_status || (loc.is_on_site ? 'On-Site' : 'Outside Site'),
-      lastUpdated: loc.timestamp, // Pass timestamp to marker
-    };
-  });
+      lastUpdated: loc.timestamp,
+    }));
+  }, [safeLocations]);
 
   const activeTimestamp = employeeId ? safeLocations[0]?.timestamp : latestLocation?.timestamp;
 
@@ -261,7 +277,6 @@ export const LiveTrackingScreen: React.FC = () => {
             <View style={styles.webMapCard}>
               <View style={styles.webMapCardInner}>
                 <WebViewMap
-                  key={mapMarkers.map(marker => `${marker.id}:${marker.latitude}:${marker.longitude}:${marker.lastUpdated}`).join('|')}
                   latitude={mapCenter.latitude}
                   longitude={mapCenter.longitude}
                   markers={mapMarkers}
@@ -391,7 +406,6 @@ export const LiveTrackingScreen: React.FC = () => {
 
               <View style={[styles.mapWrapper, isWeb && styles.mapWrapperWeb]}>
                 <WebViewMap
-                  key={mapMarkers.map(marker => `${marker.id}:${marker.latitude}:${marker.longitude}:${marker.lastUpdated}`).join('|')}
                   latitude={mapCenter.latitude}
                   longitude={mapCenter.longitude}
                   markers={mapMarkers}

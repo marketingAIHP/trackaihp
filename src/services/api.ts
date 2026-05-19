@@ -27,7 +27,11 @@ import {
 } from '../types';
 import { STORAGE_BUCKETS, SUPABASE_ANON_KEY } from '../constants/config';
 import { deleteImage } from '../utils/storage';
-import { checkGeofence } from '../utils/geofence';
+import {
+  checkGeofence,
+  findNearestSiteWithinGeofence,
+  isGpsAccurateEnough,
+} from '../utils/geofence';
 import { hashPassword } from '../utils/password';
 import { logger } from '../utils/logger';
 
@@ -35,7 +39,6 @@ const LEGACY_INSTALLATION_ID_KEY = '@legacy_device_binding_installation_id';
 const IST_TIME_ZONE = 'Asia/Kolkata';
 const FULL_DAY_AUTO_CHECKOUT_MS = 9 * 60 * 60 * 1000;
 const DUPLICATE_NOTIFICATION_WINDOW_MS = 2 * 60 * 1000;
-const pendingAutoCheckoutAttendanceIds = new Set<number>();
 
 const publicFunctionHeaders = () => ({
   apikey: SUPABASE_ANON_KEY,
@@ -378,12 +381,18 @@ async function findExistingNotification(
   }
 }
 
-async function getEmployeeAssignedSite(employeeId: number): Promise<ApiResponse<{
+type AttendanceValidationResult = {
   remoteWork: boolean;
   site: WorkSite | null;
+  distance: number | null;
+};
+
+async function getEmployeeEligibleSites(employeeId: number): Promise<ApiResponse<{
+  remoteWork: boolean;
+  sites: WorkSite[];
 }>> {
   const { data: employee, error: employeeError } = await db.employees
-    .select('id, site_id, remote_work')
+    .select('id, admin_id, remote_work')
     .eq('id', employeeId)
     .single();
 
@@ -399,28 +408,28 @@ async function getEmployeeAssignedSite(employeeId: number): Promise<ApiResponse<
       success: true,
       data: {
         remoteWork: true,
-        site: null,
+        sites: [],
       },
     };
   }
 
-  if (!employee.site_id) {
+  const { data: sites, error: siteError } = await db.work_sites
+    .select('id, name, address, latitude, longitude, geofence_radius, admin_id, is_active')
+    .eq('admin_id', employee.admin_id)
+    .eq('is_active', true)
+    .order('id', { ascending: true });
+
+  if (siteError) {
     return {
       success: false,
-      error: 'No assigned work site. Please contact administrator.',
+      error: siteError.message || 'Failed to load available work sites.',
     };
   }
 
-  const { data: site, error: siteError } = await db.work_sites
-    .select('*')
-    .eq('id', employee.site_id)
-    .eq('is_active', true)
-    .single();
-
-  if (siteError || !site) {
+  if (!sites || sites.length === 0) {
     return {
       success: false,
-      error: siteError?.message || 'Assigned work site not found',
+      error: 'No active work sites are available right now.',
     };
   }
 
@@ -428,44 +437,56 @@ async function getEmployeeAssignedSite(employeeId: number): Promise<ApiResponse<
     success: true,
     data: {
       remoteWork: false,
-      site: site as WorkSite,
+      sites: sites as WorkSite[],
     },
   };
 }
 
 async function validateAttendanceGeofence(
   employeeId: number,
-  location: { latitude: number; longitude: number }
-): Promise<ApiResponse<{
-  remoteWork: boolean;
-  site: WorkSite | null;
-}>> {
-  const assignmentResult = await getEmployeeAssignedSite(employeeId);
+  location: { latitude: number; longitude: number; accuracy?: number | null }
+): Promise<ApiResponse<AttendanceValidationResult>> {
+  const assignmentResult = await getEmployeeEligibleSites(employeeId);
   if (!assignmentResult.success || !assignmentResult.data) {
     return {
       success: false,
-      error: assignmentResult.error || 'Failed to validate assigned site',
+      error: assignmentResult.error || 'Failed to validate nearby work site',
     };
   }
 
-  if (assignmentResult.data.remoteWork || !assignmentResult.data.site) {
-    return {
-      success: true,
-      data: assignmentResult.data,
-    };
-  }
-
-  const geofenceStatus = checkGeofence(location, assignmentResult.data.site);
-  if (!geofenceStatus.isWithinGeofence) {
+  if (!isGpsAccurateEnough(location.accuracy)) {
     return {
       success: false,
-      error: `You must be within the assigned site radius to continue. Current distance: ${Math.round(geofenceStatus.distance)}m. Allowed radius: ${Math.round(geofenceStatus.geofenceRadius)}m.`,
+      error: 'GPS accuracy must be 30m or better to check in or check out. Please wait for a stronger location fix.',
+    };
+  }
+
+  if (assignmentResult.data.remoteWork) {
+    return {
+      success: true,
+      data: {
+        remoteWork: true,
+        site: null,
+        distance: null,
+      },
+    };
+  }
+
+  const matchedSite = findNearestSiteWithinGeofence(location, assignmentResult.data.sites);
+  if (!matchedSite) {
+    return {
+      success: false,
+      error: 'No nearby active work site found within range. Move closer to a work site and try again.',
     };
   }
 
   return {
     success: true,
-    data: assignmentResult.data,
+    data: {
+      remoteWork: false,
+      site: matchedSite.site,
+      distance: matchedSite.distance,
+    },
   };
 }
 
@@ -1756,7 +1777,7 @@ export const adminApi = {
     }
   },
 
-  // Get employees not at their assigned site (alert) - outside geofence boundary
+  // Get employees not at their checked-in site (alert) - outside geofence boundary
   async getEmployeesNotAtSite(adminId: number): Promise<ApiResponse<Attendance[]>> {
     try {
       if (!isSupabaseConfigured) {
@@ -1766,7 +1787,7 @@ export const adminApi = {
       // Import geofence utility
       const { checkGeofence } = require('../utils/geofence');
 
-      // First get all employees for this admin with their assigned sites
+      // First get all employees for this admin
       const { data: employees } = await db.employees
         .select('id, site_id, remote_work, site:work_sites(*)')
         .eq('admin_id', adminId);
@@ -1792,7 +1813,7 @@ export const adminApi = {
 
       const freshCheckIns = await filterActiveAttendances(allCheckIns || []);
 
-      // Filter employees who are checked in but outside their assigned site's geofence
+      // Filter employees who are checked in but outside their detected work site's geofence
       // DEDUPLICATE by employee_id - only keep the most recent check-in per employee
       const notAtSite: any[] = [];
       const seenEmployeeIds = new Set<number>();
@@ -1810,8 +1831,10 @@ export const adminApi = {
         // Skip if employee is remote worker
         if (employee.remote_work) continue;
 
-        // Skip if employee has no assigned site
-        if (!employee.site_id || !employee.site) continue;
+        const monitoredSite = attendance.site || employee.site;
+
+        // Skip if employee has no valid work site
+        if (!monitoredSite) continue;
 
         // Skip if no check-in location
         if (!attendance.check_in_latitude || !attendance.check_in_longitude) continue;
@@ -1822,7 +1845,7 @@ export const adminApi = {
           longitude: attendance.check_in_longitude,
         };
 
-        const geofenceStatus = checkGeofence(checkInLocation, employee.site);
+        const geofenceStatus = checkGeofence(checkInLocation, monitoredSite);
 
         // Add to alert if outside geofence
         if (!geofenceStatus.isWithinGeofence) {
@@ -2165,12 +2188,7 @@ export const adminApi = {
     filters: AttendanceReportFilters = {}
   ): Promise<ApiResponse<AttendanceReportRecord[]>> {
     try {
-      const formatLocationLabel = (latitude?: number | null, longitude?: number | null, fallback = 'Unnamed Location') => {
-        if (typeof latitude === 'number' && typeof longitude === 'number') {
-          return `${latitude.toFixed(5)}, ${longitude.toFixed(5)}`;
-        }
-        return fallback;
-      };
+      const formatLocationLabel = (fallback = 'Unnamed Location') => fallback;
 
       if (!isSupabaseConfigured) {
         return { success: false, error: 'Supabase is not configured' };
@@ -2242,9 +2260,16 @@ export const adminApi = {
           date: row.check_in_time,
           check_in_time: row.check_in_time,
           check_out_time: row.check_out_time,
-          check_in_location: formatLocationLabel(row.check_in_latitude, row.check_in_longitude),
+          check_in_location:
+            row.check_in_location_name ||
+            row.site?.name ||
+            formatLocationLabel(row.is_remote_location ? 'Remote Work' : 'On-site check-in'),
           check_out_location: row.check_out_time
-            ? formatLocationLabel(row.check_out_latitude, row.check_out_longitude)
+            ? (
+              row.check_out_location_name ||
+              row.site?.name ||
+              formatLocationLabel(row.is_remote_location ? 'Remote Work' : 'On-site check-out')
+            )
             : 'Pending',
           checkout_type: row.check_out_time ? (checkoutType || 'manual_checkout') : 'pending',
           site_name: row.site?.name || 'Remote Work',
@@ -2377,6 +2402,28 @@ export const employeeApi = {
       return { success: true, data: data as Employee };
     } catch (error: any) {
       return { success: false, error: error.message || 'Failed to load profile' };
+    }
+  },
+
+  async getAvailableWorkSites(adminId: number): Promise<ApiResponse<WorkSite[]>> {
+    try {
+      if (!isSupabaseConfigured) {
+        return { success: false, error: 'Supabase is not configured' };
+      }
+
+      const { data, error } = await db.work_sites
+        .select('id, name, address, latitude, longitude, geofence_radius, admin_id, is_active')
+        .eq('admin_id', adminId)
+        .eq('is_active', true)
+        .order('id', { ascending: true });
+
+      if (error) {
+        return { success: false, error: error.message || 'Failed to load work sites' };
+      }
+
+      return { success: true, data: (data || []) as WorkSite[] };
+    } catch (error: any) {
+      return { success: false, error: error.message || 'Failed to load work sites' };
     }
   },
 
@@ -2534,7 +2581,7 @@ export const employeeApi = {
   async checkIn(
     employeeId: number,
     siteId: number | null,
-    location: { latitude: number; longitude: number; locationName?: string }
+    location: { latitude: number; longitude: number; locationName?: string; accuracy?: number | null }
   ): Promise<ApiResponse<Attendance>> {
     try {
       if (!isSupabaseConfigured) {
@@ -2557,11 +2604,6 @@ export const employeeApi = {
         return { success: false, error: 'Already checked in. Please check out first.' };
       }
 
-      const { data: employeeProfile } = await db.employees
-        .select('id, admin_id')
-        .eq('id', employeeId)
-        .single();
-
       const geofenceValidation = await validateAttendanceGeofence(employeeId, location);
       if (!geofenceValidation.success || !geofenceValidation.data) {
         return {
@@ -2571,7 +2613,9 @@ export const employeeApi = {
       }
 
       const checkInTime = new Date().toISOString();
-      const checkInLocationName = location.locationName || await resolveLocationName(location);
+      const checkInLocationName = geofenceValidation.data.remoteWork
+        ? (location.locationName || await resolveLocationName(location))
+        : (geofenceValidation.data.site?.name || 'Work Site');
 
       const resolvedSiteId = geofenceValidation.data.remoteWork
         ? (siteId || null)
@@ -2589,9 +2633,7 @@ export const employeeApi = {
       const fullInsertPayload = {
         ...baseInsertPayload,
         is_remote_location: isRemoteLocation,
-        check_in_location_name: isRemoteLocation
-          ? `Remote Work (${location.latitude.toFixed(6)}, ${location.longitude.toFixed(6)})`
-          : checkInLocationName,
+        check_in_location_name: checkInLocationName,
       };
 
       let insertResult = await db.attendance
@@ -2661,7 +2703,7 @@ export const employeeApi = {
   async checkOut(
     employeeId: number,
     attendanceId: number,
-    location: { latitude: number; longitude: number; locationName?: string },
+    location: { latitude: number; longitude: number; locationName?: string; accuracy?: number | null },
     checkoutType: CheckoutType = 'manual_checkout'
   ): Promise<ApiResponse<Attendance>> {
     try {
@@ -2686,9 +2728,7 @@ export const employeeApi = {
         Math.min(requestedCheckOutAt.getTime(), deadlineAt.getTime())
       );
       const useStoredLocationForLateAutoCheckout = deadlineHasPassed;
-      const checkOutLocationName = useStoredLocationForLateAutoCheckout
-        ? ((attendanceData as any)?.check_in_location_name || 'Auto checkout')
-        : (location.locationName || await resolveLocationName(location));
+      let validatedLocationName: string | null = null;
 
       if (checkoutType === 'manual_checkout' && !deadlineHasPassed) {
         const geofenceValidation = await validateAttendanceGeofence(employeeId, location);
@@ -2698,7 +2738,15 @@ export const employeeApi = {
             error: geofenceValidation.error || 'Unable to validate your location',
           };
         }
+
+        validatedLocationName = geofenceValidation.data?.remoteWork
+          ? (location.locationName || await resolveLocationName(location))
+          : (geofenceValidation.data?.site?.name || 'Work Site');
       }
+
+      const checkOutLocationName = useStoredLocationForLateAutoCheckout
+        ? ((attendanceData as any)?.check_in_location_name || 'Auto checkout')
+        : (validatedLocationName || location.locationName || await resolveLocationName(location));
 
       const baseUpdatePayload = {
         check_out_time: effectiveCheckOutAt.toISOString(),
@@ -2825,12 +2873,7 @@ export const employeeApi = {
         return { success: false, error: 'Supabase is not configured' };
       }
 
-      const formatLocationLabel = (latitude?: number | null, longitude?: number | null, fallback = 'Unnamed Location') => {
-        if (typeof latitude === 'number' && typeof longitude === 'number') {
-          return `${latitude.toFixed(5)}, ${longitude.toFixed(5)}`;
-        }
-        return fallback;
-      };
+      const formatLocationLabel = (fallback = 'Unnamed Location') => fallback;
 
       const buildHistoryQuery = (
         includeLocationNames: boolean,
@@ -2911,9 +2954,16 @@ export const employeeApi = {
       // Map sites to records
       const recordsWithSites = data.map((record: any) => ({
         ...record,
-        check_in_location_name: record.check_in_location_name || formatLocationLabel(record.check_in_latitude, record.check_in_longitude),
+        check_in_location_name:
+          record.check_in_location_name ||
+          (record.site_id ? sitesMap.get(record.site_id)?.name : null) ||
+          formatLocationLabel(record.is_remote_location ? 'Remote Work' : 'On-site check-in'),
         check_out_location_name: record.check_out_time
-          ? (record.check_out_location_name || formatLocationLabel(record.check_out_latitude, record.check_out_longitude))
+          ? (
+            record.check_out_location_name ||
+            (record.site_id ? sitesMap.get(record.site_id)?.name : null) ||
+            formatLocationLabel(record.is_remote_location ? 'Remote Work' : 'On-site check-out')
+          )
           : undefined,
         checkout_type: record.check_out_time
           ? (inferCheckoutType(record.check_in_time, record.check_out_time, record.checkout_type) || 'manual_checkout')
@@ -3052,7 +3102,7 @@ export const employeeApi = {
       const nextTs = parseTimestamp(nextTimestamp).getTime();
 
       if (latestRow && latestTs > nextTs) {
-        console.log('[updateLiveLocation] Skipping stale update:', JSON.stringify({
+        logger.debug('[updateLiveLocation] Skipping stale update:', JSON.stringify({
           employee_id: employeeId,
           incomingTimestamp: nextTimestamp,
           latestTimestamp: latestRow.timestamp,
@@ -3075,62 +3125,31 @@ export const employeeApi = {
         !isOnSite &&
         currentAttendance.data.id
       ) {
-        const attendanceKey = Number(currentAttendance.data.id);
+        const distance = checkGeofence(location, activeSite as WorkSite).distance;
+        const thirtyMinutesAgo = new Date(Date.now() - 30 * 60 * 1000).toISOString();
+        const { data: existingExitAlerts } = await db.notifications
+          .select('id')
+          .eq('admin_id', employee.admin_id)
+          .eq('type', 'alert')
+          .eq('metadata->>attendance_id', String(currentAttendance.data.id))
+          .eq('metadata->>event', 'geofence_exit')
+          .gte('created_at', thirtyMinutesAgo)
+          .limit(1);
 
-        if (pendingAutoCheckoutAttendanceIds.has(attendanceKey)) {
-          return { success: true, data: (latestRow as LocationTracking) || undefined };
-        }
-
-        pendingAutoCheckoutAttendanceIds.add(attendanceKey);
-
-        try {
-          const distance = checkGeofence(location, activeSite as WorkSite).distance;
-          const thirtyMinutesAgo = new Date(Date.now() - 30 * 60 * 1000).toISOString();
-          const { data: existingExitAlerts } = await db.notifications
-            .select('id')
-            .eq('admin_id', employee.admin_id)
-            .eq('type', 'alert')
-            .eq('metadata->>attendance_id', String(currentAttendance.data.id))
-            .eq('metadata->>event', 'geofence_exit')
-            .gte('created_at', thirtyMinutesAgo)
-            .limit(1);
-
-          if (!existingExitAlerts || existingExitAlerts.length === 0) {
-            await adminApi.createNotification(employee.admin_id, {
-              type: 'alert',
-              title: 'Geofence Exit Alert',
-              message: `${employee.first_name} ${employee.last_name} left ${activeSite.name}. Distance: ${Math.round(distance)}m`,
-              metadata: {
-                event: 'geofence_exit',
-                employee_id: employeeId,
-                attendance_id: currentAttendance.data.id,
-                site_id: activeSite.id,
-                distance: Math.round(distance),
-                exited_at: recordTimestamp,
-              },
-            });
-          }
-
-          const autoCheckoutResult = await this.autoCheckoutAttendance(employeeId, currentAttendance.data.id, {
-            latitude: location.latitude,
-            longitude: location.longitude,
-            locationName: await resolveLocationName(location),
+        if (!existingExitAlerts || existingExitAlerts.length === 0) {
+          await adminApi.createNotification(employee.admin_id, {
+            type: 'alert',
+            title: 'Geofence Exit Alert',
+            message: `${employee.first_name} ${employee.last_name} left ${activeSite.name}. Distance: ${Math.round(distance)}m`,
+            metadata: {
+              event: 'geofence_exit',
+              employee_id: employeeId,
+              attendance_id: currentAttendance.data.id,
+              site_id: activeSite.id,
+              distance: Math.round(distance),
+              exited_at: recordTimestamp,
+            },
           });
-
-          if (autoCheckoutResult.success) {
-            return {
-              success: true,
-              data: (latestRow as LocationTracking) || {
-                employee_id: employeeId,
-                latitude: location.latitude,
-                longitude: location.longitude,
-                is_on_site: false,
-                timestamp: nextTimestamp,
-              } as LocationTracking,
-            };
-          }
-        } finally {
-          pendingAutoCheckoutAttendanceIds.delete(attendanceKey);
         }
       }
 
@@ -3142,7 +3161,7 @@ export const employeeApi = {
         timestamp: nextTimestamp,
       };
 
-      console.log('[updateLiveLocation] Writing current live location:', JSON.stringify(payload));
+      logger.debug('[updateLiveLocation] Writing current live location:', JSON.stringify(payload));
 
       let data: any = null;
       let error: any = null;
@@ -3167,7 +3186,7 @@ export const employeeApi = {
       }
 
       // DEBUG: Log the result
-      console.log('[updateLiveLocation] Result:', {
+      logger.debug('[updateLiveLocation] Result:', {
         success: !error,
         hasData: !!data,
         error: error?.message,
@@ -3176,12 +3195,12 @@ export const employeeApi = {
       });
 
       if (error) {
-        console.error('[updateLiveLocation] Error:', error);
+        logger.warn('[updateLiveLocation] Error:', error);
         return { success: false, error: error.message || 'Failed to update location' };
       }
 
       if (!data) {
-        console.error('[updateLiveLocation] No data returned');
+        logger.warn('[updateLiveLocation] No data returned');
         return { success: false, error: 'Failed to save location data' };
       }
 

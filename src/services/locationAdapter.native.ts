@@ -13,12 +13,18 @@ const MAX_CACHED_LOCATION_AGE_MS = 10000;
 const MAX_CACHED_LOCATION_ACCURACY = 35;
 
 function withTimeout<T>(promise: Promise<T>, timeoutMs: number) {
+  let timeoutId: ReturnType<typeof setTimeout> | null = null;
+
   return Promise.race([
     promise,
     new Promise<never>((_, reject) => {
-      setTimeout(() => reject(new Error('timeout')), timeoutMs);
+      timeoutId = setTimeout(() => reject(new Error('timeout')), timeoutMs);
     }),
-  ]);
+  ]).finally(() => {
+    if (timeoutId) {
+      clearTimeout(timeoutId);
+    }
+  });
 }
 
 function toResult(location: Location.LocationObject): PlatformLocationResult {
@@ -68,45 +74,43 @@ export async function getPlatformCurrentLocation(
     return toResult(cached);
   }
 
-  const balancedPromise = Location.getCurrentPositionAsync({
-    accuracy: Location.Accuracy.Balanced,
-  });
-  const highPromise = Location.getCurrentPositionAsync({
-    accuracy: Location.Accuracy.High,
-  });
+  const attemptOrder = [
+    Location.Accuracy.Balanced,
+    Location.Accuracy.High,
+    Location.Accuracy.Highest,
+  ];
 
-  let location = await withTimeout(Promise.race([balancedPromise, highPromise]), timeoutMs);
-  let accuracy = location.coords.accuracy ?? Infinity;
+  let bestLocation: Location.LocationObject | null = null;
+  let bestAccuracy = Infinity;
 
-  if (accuracy > targetAccuracy) {
+  for (const accuracyLevel of attemptOrder) {
     try {
-      const betterLocation = await withTimeout(highPromise, timeoutMs);
-      if ((betterLocation.coords.accuracy ?? Infinity) <= accuracy) {
-        location = betterLocation;
-        accuracy = betterLocation.coords.accuracy ?? accuracy;
-      }
-    } catch {
-      // Keep the first successful fix.
-    }
-  }
-
-  if (accuracy > targetAccuracy) {
-    try {
-      const highestLocation = await withTimeout(
+      const nextLocation = await withTimeout(
         Location.getCurrentPositionAsync({
-          accuracy: Location.Accuracy.Highest,
+          accuracy: accuracyLevel,
         }),
         timeoutMs
       );
-      if ((highestLocation.coords.accuracy ?? Infinity) <= accuracy) {
-        location = highestLocation;
+      const nextAccuracy = nextLocation.coords.accuracy ?? Infinity;
+
+      if (nextAccuracy <= bestAccuracy) {
+        bestLocation = nextLocation;
+        bestAccuracy = nextAccuracy;
+      }
+
+      if (bestAccuracy <= targetAccuracy) {
+        break;
       }
     } catch {
-      // Keep the best earlier fix.
+      // Keep the best successful fix gathered so far.
     }
   }
 
-  return toResult(location);
+  if (!bestLocation) {
+    throw new Error('Location unavailable');
+  }
+
+  return toResult(bestLocation);
 }
 
 export async function watchPlatformLocation(

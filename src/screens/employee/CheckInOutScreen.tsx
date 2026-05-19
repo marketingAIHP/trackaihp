@@ -5,10 +5,20 @@ import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query';
 import { SafeAreaView } from 'react-native-safe-area-context';
 import { Button, Card, Chip, Divider, Text, useTheme } from 'react-native-paper';
 import { employeeApi } from '../../services/api';
+import { ATTENDANCE_GPS_ACCURACY_THRESHOLD } from '../../constants/config';
 import { useAuth } from '../../hooks/useAuth';
 import { useLocation } from '../../hooks/useLocation';
-import { Attendance, AttendanceSession, AttendanceType, Coordinates } from '../../types';
-import { checkGeofence } from '../../utils/geofence';
+import {
+  Attendance,
+  AttendanceSession,
+  AttendanceType,
+  LocationSnapshot,
+  NearbyWorkSiteMatch,
+} from '../../types';
+import {
+  findNearestSiteWithinGeofence,
+  isGpsAccurateEnough,
+} from '../../utils/geofence';
 import { formatDistance } from '../../utils/format';
 import LocationTrackingService from '../../services/LocationTrackingService';
 
@@ -164,7 +174,7 @@ export const CheckInOutScreen: React.FC = () => {
     accuracy,
     error: locationError,
     permissionGranted,
-    getCurrentLocation,
+    getCurrentLocationSnapshot,
   } = useLocation();
 
   useEffect(() => {
@@ -195,6 +205,20 @@ export const CheckInOutScreen: React.FC = () => {
     staleTime: 0,
   });
 
+  const profile = profileQuery.data;
+
+  const workSitesQuery = useQuery({
+    queryKey: ['employee', 'work-sites', profile?.admin_id],
+    queryFn: async () => {
+      const response = await employeeApi.getAvailableWorkSites(profile!.admin_id);
+      if (response.success && response.data) return response.data;
+      throw new Error(response.error || 'Failed to load work sites');
+    },
+    enabled: !!profile?.admin_id && !profile?.remote_work,
+    staleTime: 5 * 60 * 1000,
+    gcTime: 15 * 60 * 1000,
+  });
+
   const historyQuery = useQuery({
     queryKey: ['employee', 'attendance', 'history', employeeId],
     queryFn: async () => {
@@ -215,9 +239,48 @@ export const CheckInOutScreen: React.FC = () => {
     ]);
   }, [queryClient]);
 
-  const profile = profileQuery.data;
   const currentAttendance = currentAttendanceQuery.data || null;
-  const assignedSite = profile?.site;
+  const availableWorkSites = workSitesQuery.data || [];
+  const hasNearbyWorkSite = !profile?.remote_work && availableWorkSites.length > 0;
+
+  const nearbySite = useMemo<NearbyWorkSiteMatch | null>(() => {
+    if (!coordinates || profile?.remote_work || availableWorkSites.length === 0) {
+      return null;
+    }
+
+    return findNearestSiteWithinGeofence(coordinates, availableWorkSites);
+  }, [availableWorkSites, coordinates, profile?.remote_work]);
+
+  const isGpsAccurate = isGpsAccurateEnough(accuracy);
+  const locationSummary = useMemo(() => {
+    if (profile?.remote_work) {
+      if (currentAttendance?.check_in_location_name) {
+        return currentAttendance.check_in_location_name;
+      }
+      return 'Remote location will be captured at check-in';
+    }
+
+    if (workSitesQuery.isLoading) {
+      return 'Loading nearby work sites...';
+    }
+
+    if (currentAttendance?.site?.name) {
+      return currentAttendance.site.name;
+    }
+
+    if (nearbySite) {
+      return nearbySite.site.name;
+    }
+
+    return hasNearbyWorkSite ? 'No nearby work site detected' : 'No active work sites available';
+  }, [
+    currentAttendance?.check_in_location_name,
+    currentAttendance?.site?.name,
+    hasNearbyWorkSite,
+    nearbySite,
+    profile?.remote_work,
+    workSitesQuery.isLoading,
+  ]);
 
   const todaySessions = useMemo(
     () => buildTodaySessions(historyQuery.data, currentAttendance),
@@ -256,7 +319,8 @@ export const CheckInOutScreen: React.FC = () => {
 
   const canCheckIn =
     !!employeeId && !hasActiveSession && !isProcessingAttendance &&
-    !currentAttendanceQuery.isLoading && !profileQuery.isLoading;
+    !currentAttendanceQuery.isLoading && !profileQuery.isLoading &&
+    (profile?.remote_work || !workSitesQuery.isLoading);
   const canCheckOut = (() => {
     if (!employeeId || !hasActiveSession || !activeSession || isProcessingAttendance) return false;
     if (activeSession.session_type === 'overtime') return true;
@@ -283,24 +347,34 @@ export const CheckInOutScreen: React.FC = () => {
   const refreshLocation = useCallback(async () => {
     setIsRefreshingLocation(true);
     try {
-      await getCurrentLocation({
+      await getCurrentLocationSnapshot({
         preferCached: false,
-        targetAccuracy: 20,
+        targetAccuracy: ATTENDANCE_GPS_ACCURACY_THRESHOLD,
         timeoutMs: 15000,
       });
     } finally {
       setIsRefreshingLocation(false);
     }
-  }, [getCurrentLocation]);
+  }, [getCurrentLocationSnapshot]);
 
-  const getFreshLocationForAttendance = useCallback(async (): Promise<Coordinates | null> => {
-    const freshLocation = await getCurrentLocation({
+  const getDetectedSiteForSnapshot = useCallback((snapshot: LocationSnapshot) => {
+    if (profile?.remote_work) {
+      return null;
+    }
+
+    return findNearestSiteWithinGeofence(snapshot.coordinates, availableWorkSites);
+  }, [availableWorkSites, profile?.remote_work]);
+
+  const getFreshLocationForAttendance = useCallback(async (
+    actionLabel: 'check in' | 'check out'
+  ): Promise<{ snapshot: LocationSnapshot; detectedSite: NearbyWorkSiteMatch | null } | null> => {
+    const snapshot = await getCurrentLocationSnapshot({
       preferCached: false,
-      targetAccuracy: 20,
+      targetAccuracy: ATTENDANCE_GPS_ACCURACY_THRESHOLD,
       timeoutMs: 15000,
     });
 
-    if (!freshLocation) {
+    if (!snapshot) {
       Alert.alert(
         'Location not available',
         locationError || 'Please enable location services and try again.'
@@ -308,51 +382,68 @@ export const CheckInOutScreen: React.FC = () => {
       return null;
     }
 
-    return freshLocation;
-  }, [getCurrentLocation, locationError]);
-
-  const validateLocationForAction = useCallback((
-    freshLocation: Coordinates,
-    actionLabel: 'check in' | 'check out'
-  ): boolean => {
-    if (profile?.remote_work) return true;
-
-    if (!assignedSite) {
-      Alert.alert('No assigned site', 'Please contact your administrator to assign a work site.');
-      return false;
-    }
-
-    const geofenceStatus = checkGeofence(freshLocation, assignedSite);
-    if (!geofenceStatus.isWithinGeofence) {
+    if (!isGpsAccurateEnough(snapshot.accuracy)) {
       Alert.alert(
-        'Outside assigned site',
-        `You must be within the assigned site radius to ${actionLabel}. Current distance: ${formatDistance(geofenceStatus.distance)}. Allowed radius: ${formatDistance(geofenceStatus.geofenceRadius)}.`
+        'GPS accuracy too low',
+        `A GPS accuracy of ${ATTENDANCE_GPS_ACCURACY_THRESHOLD}m or better is required to ${actionLabel}. Current accuracy: ${Math.round(snapshot.accuracy || 0)}m.`
       );
-      return false;
+      return null;
     }
 
-    return true;
-  }, [assignedSite, profile?.remote_work]);
+    if (profile?.remote_work) {
+      return { snapshot, detectedSite: null };
+    }
+
+    if (workSitesQuery.isLoading) {
+      Alert.alert('Loading sites', 'Please wait while nearby work sites are loaded.');
+      return null;
+    }
+
+    if (availableWorkSites.length === 0) {
+      Alert.alert('No active work sites', 'No active work sites are available right now.');
+      return null;
+    }
+
+    const detectedSite = getDetectedSiteForSnapshot(snapshot);
+    if (!detectedSite) {
+      Alert.alert(
+        'No nearby work site',
+        `You must be inside an active work site radius to ${actionLabel}.`
+      );
+      return null;
+    }
+
+    return { snapshot, detectedSite };
+  }, [
+    availableWorkSites,
+    getCurrentLocationSnapshot,
+    getDetectedSiteForSnapshot,
+    locationError,
+    profile?.remote_work,
+    workSitesQuery.isLoading,
+  ]);
 
   const checkInMutation = useMutation({
-    mutationFn: async (location: Coordinates) => {
-      if (!profile?.remote_work && !profile?.site_id) {
-        throw new Error('No assigned work site. Please contact administrator.');
-      }
-
-      const siteId = profile?.remote_work ? (profile?.site_id || null) : profile.site_id!;
-      const response = await employeeApi.checkIn(employeeId, siteId, location);
+    mutationFn: async (payload: { snapshot: LocationSnapshot; detectedSite: NearbyWorkSiteMatch | null }) => {
+      const siteId = profile?.remote_work
+        ? (profile?.site_id || null)
+        : (payload.detectedSite?.site.id || null);
+      const response = await employeeApi.checkIn(employeeId, siteId, {
+        latitude: payload.snapshot.coordinates.latitude,
+        longitude: payload.snapshot.coordinates.longitude,
+        accuracy: payload.snapshot.accuracy,
+      });
       if (response.success && response.data) return response.data;
       throw new Error(response.error || 'Check-in failed');
     },
-    onSuccess: async (attendance, checkInLocation) => {
+    onSuccess: async (attendance, payload) => {
       const siteId = attendance.site_id || profile?.site_id || undefined;
       const trackingResult = await LocationTrackingService.checkInEmployee(
         employeeId,
         siteId,
         {
-          latitude: attendance.check_in_latitude ?? checkInLocation.latitude,
-          longitude: attendance.check_in_longitude ?? checkInLocation.longitude,
+          latitude: attendance.check_in_latitude ?? payload.snapshot.coordinates.latitude,
+          longitude: attendance.check_in_longitude ?? payload.snapshot.coordinates.longitude,
         }
       );
       if (!trackingResult.success) {
@@ -360,7 +451,10 @@ export const CheckInOutScreen: React.FC = () => {
       }
 
       await invalidateAttendance();
-      Alert.alert('Success', 'Checked in successfully. Location tracking is active.');
+      Alert.alert(
+        'Success',
+        `Checked in successfully at ${attendance.site?.name || attendance.check_in_location_name || 'Remote Work'}.`
+      );
     },
     onError: (error: any) => {
       Alert.alert('Check-in blocked', error.message || 'Check-in failed');
@@ -368,19 +462,26 @@ export const CheckInOutScreen: React.FC = () => {
   });
 
   const checkOutMutation = useMutation({
-    mutationFn: async (location: Coordinates) => {
+    mutationFn: async (payload: { snapshot: LocationSnapshot; detectedSite: NearbyWorkSiteMatch | null }) => {
       if (!currentAttendance) {
         throw new Error('No active attendance');
       }
 
-      const response = await employeeApi.checkOut(employeeId, currentAttendance.id, location);
+      const response = await employeeApi.checkOut(employeeId, currentAttendance.id, {
+        latitude: payload.snapshot.coordinates.latitude,
+        longitude: payload.snapshot.coordinates.longitude,
+        accuracy: payload.snapshot.accuracy,
+      });
       if (response.success && response.data) return response.data;
       throw new Error(response.error || 'Check-out failed');
     },
-    onSuccess: async () => {
+    onSuccess: async (attendance) => {
       await LocationTrackingService.checkOutEmployee();
       await invalidateAttendance();
-      Alert.alert('Success', 'Checked out successfully. Location tracking stopped.');
+      Alert.alert(
+        'Success',
+        `Checked out successfully from ${attendance.site?.name || attendance.check_out_location_name || 'Remote Work'}.`
+      );
     },
     onError: (error: any) => {
       Alert.alert('Check-out blocked', error.message || 'Check-out failed');
@@ -392,10 +493,10 @@ export const CheckInOutScreen: React.FC = () => {
 
     setIsProcessingAttendance(true);
     try {
-      const freshLocation = await getFreshLocationForAttendance();
-      if (!freshLocation || !validateLocationForAction(freshLocation, 'check in')) return;
+      const attendancePayload = await getFreshLocationForAttendance('check in');
+      if (!attendancePayload) return;
 
-      await checkInMutation.mutateAsync(freshLocation);
+      await checkInMutation.mutateAsync(attendancePayload);
     } finally {
       setIsProcessingAttendance(false);
     }
@@ -404,7 +505,6 @@ export const CheckInOutScreen: React.FC = () => {
     checkInMutation,
     checkOutMutation.isPending,
     getFreshLocationForAttendance,
-    validateLocationForAction,
   ]);
 
   const handleCheckOut = useCallback(async () => {
@@ -412,10 +512,10 @@ export const CheckInOutScreen: React.FC = () => {
 
     setIsProcessingAttendance(true);
     try {
-      const freshLocation = await getFreshLocationForAttendance();
-      if (!freshLocation || !validateLocationForAction(freshLocation, 'check out')) return;
+      const attendancePayload = await getFreshLocationForAttendance('check out');
+      if (!attendancePayload) return;
 
-      await checkOutMutation.mutateAsync(freshLocation);
+      await checkOutMutation.mutateAsync(attendancePayload);
     } finally {
       setIsProcessingAttendance(false);
     }
@@ -424,7 +524,6 @@ export const CheckInOutScreen: React.FC = () => {
     checkInMutation.isPending,
     checkOutMutation,
     getFreshLocationForAttendance,
-    validateLocationForAction,
   ]);
 
   return (
@@ -509,8 +608,14 @@ export const CheckInOutScreen: React.FC = () => {
 
               {coordinates ? (
                 <View style={styles.locationDetails}>
-                  <Text variant="bodyMedium">Latitude: {coordinates.latitude.toFixed(6)}</Text>
-                  <Text variant="bodyMedium">Longitude: {coordinates.longitude.toFixed(6)}</Text>
+                  <Text variant="bodyMedium">
+                    {profile?.remote_work ? 'Location' : 'Detected site'}: {locationSummary}
+                  </Text>
+                  {!profile?.remote_work && nearbySite ? (
+                    <Text variant="bodySmall" style={styles.muted}>
+                      Distance: {formatDistance(nearbySite.distance)} | Radius: {formatDistance(nearbySite.geofenceRadius)}
+                    </Text>
+                  ) : null}
                   {accuracy !== null ? (
                     <Text variant="bodySmall" style={styles.muted}>GPS accuracy: {Math.round(accuracy)}m</Text>
                   ) : null}
@@ -527,6 +632,16 @@ export const CheckInOutScreen: React.FC = () => {
               {permissionGranted === false ? (
                 <Text variant="bodySmall" style={styles.warningText}>
                   Location permission is required for check-in and check-out.
+                </Text>
+              ) : null}
+              {coordinates && !isGpsAccurate ? (
+                <Text variant="bodySmall" style={styles.warningText}>
+                  GPS accuracy must be {ATTENDANCE_GPS_ACCURACY_THRESHOLD}m or better before attendance actions are allowed.
+                </Text>
+              ) : null}
+              {!profile?.remote_work && !workSitesQuery.isLoading && !nearbySite && hasNearbyWorkSite ? (
+                <Text variant="bodySmall" style={styles.warningText}>
+                  Move inside a nearby active work site radius to check in or check out.
                 </Text>
               ) : null}
             </Card.Content>
@@ -553,9 +668,15 @@ export const CheckInOutScreen: React.FC = () => {
             </Button>
           </View>
 
-          {!profile?.remote_work && !assignedSite && !profileQuery.isLoading ? (
+          {!profile?.remote_work && workSitesQuery.error ? (
             <Text variant="bodySmall" style={styles.warningText}>
-              No assigned work site found. Please contact your administrator.
+              {(workSitesQuery.error as Error).message}
+            </Text>
+          ) : null}
+
+          {!profile?.remote_work && !workSitesQuery.isLoading && availableWorkSites.length === 0 && !workSitesQuery.error ? (
+            <Text variant="bodySmall" style={styles.warningText}>
+              No active work sites found. Please contact your administrator.
             </Text>
           ) : null}
 

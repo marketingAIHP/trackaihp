@@ -1,5 +1,8 @@
-import {Coordinates, WorkSite} from '../types';
-import {GPS_ACCURACY_BUFFER} from '../constants/config';
+import { Coordinates, NearbyWorkSiteMatch, WorkSite } from '../types';
+import {
+  ATTENDANCE_GPS_ACCURACY_THRESHOLD,
+  GPS_ACCURACY_BUFFER,
+} from '../constants/config';
 
 /**
  * Calculate distance between two coordinates using Haversine formula
@@ -28,6 +31,22 @@ export function calculateDistance(
   return R * c; // Distance in meters
 }
 
+function normalizeSiteCoordinates(site: WorkSite): Coordinates {
+  return {
+    latitude: Number(site.latitude),
+    longitude: Number(site.longitude),
+  };
+}
+
+export function getEffectiveGeofenceRadius(site: WorkSite): number {
+  const geofenceRadius = Number(site.geofence_radius) || 0;
+  return geofenceRadius + GPS_ACCURACY_BUFFER;
+}
+
+export function isGpsAccurateEnough(accuracy: number | null | undefined): boolean {
+  return typeof accuracy === 'number' && accuracy > 0 && accuracy <= ATTENDANCE_GPS_ACCURACY_THRESHOLD;
+}
+
 /**
  * Check if coordinates are within geofence
  * @param employeeLocation Employee's current location
@@ -43,15 +62,10 @@ export function checkGeofence(
   geofenceRadius: number;
   site: WorkSite;
 } {
-  const siteLocation: Coordinates = {
-    latitude: Number(site.latitude),
-    longitude: Number(site.longitude),
-  };
-
+  const siteLocation = normalizeSiteCoordinates(site);
   const distance = calculateDistance(employeeLocation, siteLocation);
   const geofenceRadius = Number(site.geofence_radius) || 0;
-  // Use small buffer only for GPS accuracy tolerance
-  const effectiveRadius = geofenceRadius + GPS_ACCURACY_BUFFER;
+  const effectiveRadius = getEffectiveGeofenceRadius(site);
   const isWithinGeofence = distance <= effectiveRadius;
 
   return {
@@ -60,6 +74,37 @@ export function checkGeofence(
     geofenceRadius: geofenceRadius,
     site,
   };
+}
+
+export function findNearestSiteWithinGeofence(
+  employeeLocation: Coordinates,
+  sites: WorkSite[]
+): NearbyWorkSiteMatch | null {
+  let nearestMatch: NearbyWorkSiteMatch | null = null;
+
+  for (const site of sites) {
+    if (!site?.is_active) {
+      continue;
+    }
+
+    const geofenceStatus = checkGeofence(employeeLocation, site);
+    if (!geofenceStatus.isWithinGeofence) {
+      continue;
+    }
+
+    const candidate: NearbyWorkSiteMatch = {
+      site,
+      distance: geofenceStatus.distance,
+      geofenceRadius: geofenceStatus.geofenceRadius,
+      effectiveRadius: getEffectiveGeofenceRadius(site),
+    };
+
+    if (!nearestMatch || candidate.distance < nearestMatch.distance) {
+      nearestMatch = candidate;
+    }
+  }
+
+  return nearestMatch;
 }
 
 /**
@@ -78,11 +123,7 @@ export function findNearestSite(
   let minDistance = Infinity;
 
   for (const site of sites) {
-    const siteLocation: Coordinates = {
-      latitude: Number(site.latitude),
-      longitude: Number(site.longitude),
-    };
-    const distance = calculateDistance(employeeLocation, siteLocation);
+    const distance = calculateDistance(employeeLocation, normalizeSiteCoordinates(site));
 
     if (distance < minDistance) {
       minDistance = distance;
@@ -97,4 +138,3 @@ export function findNearestSite(
     distance: Math.round(minDistance),
   };
 }
-

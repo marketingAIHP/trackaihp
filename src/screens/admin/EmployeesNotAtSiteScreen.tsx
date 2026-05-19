@@ -38,21 +38,21 @@ export const EmployeesNotAtSiteScreen: React.FC = () => {
 
   const renderEmployee = ({item}: {item: Attendance}) => {
     const employee = item.employee;
-    const assignedSite = employee?.site;
+    const monitoredSite = item.site || employee?.site;
     
-    if (!employee || !assignedSite) return null;
+    if (!employee || !monitoredSite) return null;
 
-    // Calculate distance from check-in location to assigned site
+    // Calculate distance from the recorded attendance site
     let distance = 0;
     let distanceText = 'Unknown';
     
-    if (item.check_in_latitude && item.check_in_longitude && assignedSite) {
+    if (item.check_in_latitude && item.check_in_longitude) {
       const checkInLocation = {
         latitude: item.check_in_latitude,
         longitude: item.check_in_longitude,
       };
       
-      const geofenceStatus = checkGeofence(checkInLocation, assignedSite);
+      const geofenceStatus = checkGeofence(checkInLocation, monitoredSite);
       distance = geofenceStatus.distance;
       distanceText = formatDistance(distance);
     }
@@ -77,7 +77,7 @@ export const EmployeesNotAtSiteScreen: React.FC = () => {
                 <View style={styles.siteRow}>
                   <Icon name="map-marker" size={16} color={colors.danger[600]} />
                   <Text variant="bodySmall" style={styles.assignedSite}>
-                    Assigned Site: {assignedSite.name}
+                    Site: {monitoredSite.name}
                   </Text>
                 </View>
                 <View style={styles.siteRow}>

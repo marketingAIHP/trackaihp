@@ -255,10 +255,23 @@ export interface Coordinates {
   longitude: number;
 }
 
+export interface LocationSnapshot {
+  coordinates: Coordinates;
+  accuracy: number | null;
+  timestamp: number;
+}
+
 export interface GeofenceStatus {
   isWithinGeofence: boolean;
   distance: number;
   site?: WorkSite;
+}
+
+export interface NearbyWorkSiteMatch {
+  site: WorkSite;
+  distance: number;
+  geofenceRadius: number;
+  effectiveRadius: number;
 }
 
 // Navigation Types
