@@ -258,7 +258,7 @@ export const AdminDashboardScreen: React.FC = () => {
                 <Text style={[styles.appTitlePart, styles.crewtrackText]}>CrewTrack</Text>
               </Text>
               <Text variant="titleMedium" style={styles.dashboardTitle}>
-                Admin Dashboard
+                AIHP Admin Dashboard 
               </Text>
             </View>
             <Pressable
