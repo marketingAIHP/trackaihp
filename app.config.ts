@@ -36,8 +36,9 @@ const config: ExpoConfig = {
   userInterfaceStyle: 'automatic',
   jsEngine: 'hermes',
   updates: {
+    enabled: true,
     url: 'https://u.expo.dev/0fb5aecb-8923-4ed3-a7b4-009652522764',
-    checkAutomatically: 'ON_ERROR_RECOVERY',
+    checkAutomatically: 'ON_LOAD',
     fallbackToCacheTimeout: 0,
   },
   splash: {
@@ -49,7 +50,6 @@ const config: ExpoConfig = {
   ios: {
     supportsTablet: true,
     bundleIdentifier: iosBundleIdentifier,
-    buildNumber: '1',
     infoPlist: {
       ITSAppUsesNonExemptEncryption: false,
       NSLocationWhenInUseUsageDescription:
@@ -65,19 +65,13 @@ const config: ExpoConfig = {
   },
   android: {
     package: androidPackage,
-    versionCode: 1,
+    blockedPermissions: ['android.permission.RECORD_AUDIO'],
     adaptiveIcon: {
       foregroundImage: './assets/adaptive-icon.png',
       backgroundColor: '#0f172a',
     },
-    permissions: [
-      'ACCESS_FINE_LOCATION',
-      'ACCESS_COARSE_LOCATION',
-      'ACCESS_BACKGROUND_LOCATION',
-      'POST_NOTIFICATIONS',
-      'FOREGROUND_SERVICE',
-      'FOREGROUND_SERVICE_LOCATION',
-    ],
+    permissions: ['POST_NOTIFICATIONS'],
+
     config: {
       googleMaps: {
         apiKey: googleMapsApiKey,
@@ -95,33 +89,34 @@ const config: ExpoConfig = {
     description:
       'Employee attendance, GPS check-in/out, history, and report downloads for AIHP crews.',
   },
-  plugins: [
-    'expo-asset',
-    'expo-router',
-    'expo-secure-store',
-    [
-      'expo-location',
-      {
-        locationAlwaysAndWhenInUsePermission:
-          'Allow AIHP CrewTrack to use your location for attendance tracking.',
-        locationAlwaysPermission:
-          'Allow AIHP CrewTrack to track your location in the background while you are checked in.',
-        locationWhenInUsePermission:
-          'Allow AIHP CrewTrack to use your location for attendance tracking.',
-        isAndroidBackgroundLocationEnabled: true,
-        isAndroidForegroundServiceEnabled: true,
-        isIosBackgroundLocationEnabled: true,
-      },
-    ],
-    [
-      'expo-image-picker',
-      {
-        photosPermission:
-          'The app accesses your photos to upload profile and site images.',
-      },
-    ],
-    'expo-notifications',
+ plugins: [
+  'expo-asset',
+  'expo-router',
+  'expo-secure-store',
+
+  [
+    'expo-build-properties',
+    {
+      android: {},
+      ios: {},
+    },
   ],
+
+  [
+    'expo-location',
+    {
+      locationAlwaysAndWhenInUsePermission:
+        'Allow AIHP CrewTrack to use your location for attendance tracking.',
+      locationAlwaysPermission:
+        'Allow AIHP CrewTrack to track your location in the background while you are checked in.',
+      locationWhenInUsePermission:
+        'Allow AIHP CrewTrack to use your location for attendance tracking.',
+      isAndroidBackgroundLocationEnabled: true,
+      isAndroidForegroundServiceEnabled: true,
+      isIosBackgroundLocationEnabled: true,
+    },
+  ],
+],
   extra: {
     EXPO_PUBLIC_SUPABASE_URL: supabaseUrl,
     EXPO_PUBLIC_SUPABASE_ANON_KEY: supabaseAnonKey,
@@ -135,7 +130,7 @@ const config: ExpoConfig = {
     eas: {
       projectId: '0fb5aecb-8923-4ed3-a7b4-009652522764',
     },
-    environment: process.env.NODE_ENV || 'development',
+    environment: appVariant,
   },
 };
 
