@@ -20,6 +20,7 @@ import AppStateMonitor from './services/AppStateMonitor';
 import LocationTrackingService from './services/LocationTrackingService';
 import { linking } from './navigation/linking';
 import { LocationProvider } from './providers/LocationProvider';
+import { AppUpdateManager } from './components/common/AppUpdateManager';
 
 // Production-optimized QueryClient configuration - AGGRESSIVE caching to reduce DB load
 const queryClient = new QueryClient({
@@ -135,6 +136,7 @@ function AppContent() {
           </LocationProvider>
         )}
       </NavigationContainer>
+      <AppUpdateManager enabled={!isLoading && !envError} />
     </PaperProvider>
   );
 }

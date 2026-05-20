@@ -78,6 +78,8 @@ sql.md
 *.sql
 !supabase/migrations/20260515_fix_attendance_auto_checkout_and_notifications.sql
 *.md
+!supabase/migrations/20260520_add_app_deployment_policies.sql
+!EAS_DEPLOYMENT.md
 
 # Testing
 coverage/
