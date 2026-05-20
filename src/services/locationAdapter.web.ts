@@ -1,4 +1,5 @@
 import {
+  PlatformLastKnownLocationOptions,
   LocationPermissionResult,
   PlatformLocationOptions,
   PlatformLocationResult,
@@ -66,6 +67,26 @@ export async function requestPlatformLocationPermission(): Promise<LocationPermi
         enableHighAccuracy: true,
         maximumAge: 0,
         timeout: 5000,
+      }
+    );
+  });
+}
+
+export async function getPlatformLastKnownLocation(
+  options?: PlatformLastKnownLocationOptions
+): Promise<PlatformLocationResult | null> {
+  assertGeolocationSupport();
+
+  const timeoutMs = Math.min(options?.maxAgeMs ?? DEFAULT_TIMEOUT_MS, DEFAULT_TIMEOUT_MS);
+
+  return new Promise<PlatformLocationResult | null>((resolve) => {
+    navigator.geolocation.getCurrentPosition(
+      (position) => resolve(toResult(position)),
+      () => resolve(null),
+      {
+        enableHighAccuracy: false,
+        maximumAge: options?.maxAgeMs ?? 60000,
+        timeout: timeoutMs,
       }
     );
   });

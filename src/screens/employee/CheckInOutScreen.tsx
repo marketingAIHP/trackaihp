@@ -2,12 +2,13 @@ import React, { useCallback, useEffect, useMemo, useState } from 'react';
 import { Alert, Platform, ScrollView, StyleSheet, View, useWindowDimensions } from 'react-native';
 import { MaterialCommunityIcons as Icon } from '@expo/vector-icons';
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query';
+import { useFocusEffect } from '@react-navigation/native';
 import { SafeAreaView } from 'react-native-safe-area-context';
 import { Button, Card, Chip, Divider, Text, useTheme } from 'react-native-paper';
 import { employeeApi } from '../../services/api';
 import { ATTENDANCE_GPS_ACCURACY_THRESHOLD } from '../../constants/config';
 import { useAuth } from '../../hooks/useAuth';
-import { useLocation } from '../../hooks/useLocation';
+import { useCachedLocation, useLocationActions } from '../../hooks/useLocation';
 import {
   Attendance,
   AttendanceSession,
@@ -26,6 +27,7 @@ const IST_TIME_ZONE = 'Asia/Kolkata';
 const HALF_DAY_SECONDS = 4.5 * 60 * 60;
 const FULL_DAY_SECONDS = 9 * 60 * 60;
 const OVERTIME_SECONDS = 2 * 60 * 60;
+const ATTENDANCE_LOCATION_CACHE_MAX_AGE_MS = 45000;
 
 function parseTime(value?: string | null): number | null {
   if (!value) return null;
@@ -174,19 +176,18 @@ export const CheckInOutScreen: React.FC = () => {
     accuracy,
     error: locationError,
     permissionGranted,
-    getCurrentLocationSnapshot,
+  } = useCachedLocation();
+  const {
+    getCachedLocationSnapshot,
     refreshLocation: refreshCachedLocation,
     primeLocation,
-  } = useLocation();
+  } = useLocationActions();
 
-  useEffect(() => {
-    const timer = setInterval(() => setNow(Date.now()), 1000);
-    return () => clearInterval(timer);
-  }, []);
-
-  useEffect(() => {
-    void primeLocation();
-  }, [primeLocation]);
+  useFocusEffect(
+    useCallback(() => {
+      void primeLocation();
+    }, [primeLocation])
+  );
 
   const profileQuery = useQuery({
     queryKey: ['employee', 'profile', employeeId],
@@ -334,6 +335,16 @@ export const CheckInOutScreen: React.FC = () => {
   })();
 
   useEffect(() => {
+    if (!hasActiveSession) {
+      setNow(Date.now());
+      return;
+    }
+
+    const timer = setInterval(() => setNow(Date.now()), 1000);
+    return () => clearInterval(timer);
+  }, [activeSession?.id, hasActiveSession]);
+
+  useEffect(() => {
     if (!employeeId || !hasActiveSession || !autoCheckoutAt) return;
 
     const refreshDelayMs = Math.max(0, autoCheckoutAt - Date.now()) + 500;
@@ -372,22 +383,18 @@ export const CheckInOutScreen: React.FC = () => {
     return findNearestSiteWithinGeofence(snapshot.coordinates, availableWorkSites);
   }, [availableWorkSites, profile?.remote_work]);
 
-  const getFreshLocationForAttendance = useCallback(async (
+  const getCachedLocationForAttendance = useCallback(async (
     actionLabel: 'check in' | 'check out'
   ): Promise<{ snapshot: LocationSnapshot; detectedSite: NearbyWorkSiteMatch | null } | null> => {
-    const snapshot = await getCurrentLocationSnapshot({
-      preferCached: true,
-      targetAccuracy: ATTENDANCE_GPS_ACCURACY_THRESHOLD,
-      maxAgeMs: 20000,
-      timeoutMs: 4500,
-      retryCount: 1,
-      allowStaleFallback: true,
+    const snapshot = getCachedLocationSnapshot({
+      maxAgeMs: ATTENDANCE_LOCATION_CACHE_MAX_AGE_MS,
     });
 
     if (!snapshot) {
       Alert.alert(
-        'Location not available',
-        locationError || 'Please enable location services and try again.'
+        'Location warming up',
+        locationError ||
+          'Cached GPS is still warming up. Keep the app open for a moment or tap Refresh, then try again.'
       );
       return null;
     }
@@ -426,7 +433,7 @@ export const CheckInOutScreen: React.FC = () => {
     return { snapshot, detectedSite };
   }, [
     availableWorkSites,
-    getCurrentLocationSnapshot,
+    getCachedLocationSnapshot,
     getDetectedSiteForSnapshot,
     locationError,
     profile?.remote_work,
@@ -503,7 +510,7 @@ export const CheckInOutScreen: React.FC = () => {
 
     setIsProcessingAttendance(true);
     try {
-      const attendancePayload = await getFreshLocationForAttendance('check in');
+      const attendancePayload = await getCachedLocationForAttendance('check in');
       if (!attendancePayload) return;
 
       await checkInMutation.mutateAsync(attendancePayload);
@@ -514,7 +521,7 @@ export const CheckInOutScreen: React.FC = () => {
     canCheckIn,
     checkInMutation,
     checkOutMutation.isPending,
-    getFreshLocationForAttendance,
+    getCachedLocationForAttendance,
   ]);
 
   const handleCheckOut = useCallback(async () => {
@@ -522,7 +529,7 @@ export const CheckInOutScreen: React.FC = () => {
 
     setIsProcessingAttendance(true);
     try {
-      const attendancePayload = await getFreshLocationForAttendance('check out');
+      const attendancePayload = await getCachedLocationForAttendance('check out');
       if (!attendancePayload) return;
 
       await checkOutMutation.mutateAsync(attendancePayload);
@@ -533,7 +540,7 @@ export const CheckInOutScreen: React.FC = () => {
     canCheckOut,
     checkInMutation.isPending,
     checkOutMutation,
-    getFreshLocationForAttendance,
+    getCachedLocationForAttendance,
   ]);
 
   return (

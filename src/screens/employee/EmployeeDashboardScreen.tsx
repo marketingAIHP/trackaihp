@@ -1,5 +1,5 @@
 import React, { useState, useEffect } from 'react';
-import { View, StyleSheet, ScrollView, RefreshControl, Image, Pressable, Platform, useWindowDimensions } from 'react-native';
+import { View, StyleSheet, ScrollView, RefreshControl, Image, Platform, useWindowDimensions } from 'react-native';
 import { Text, Card, Button, useTheme, Chip } from 'react-native-paper';
 import { SafeAreaView } from 'react-native-safe-area-context';
 import { useQuery } from '@tanstack/react-query';
@@ -7,12 +7,12 @@ import { useFocusEffect } from '@react-navigation/native';
 import { employeeApi } from '../../services/api';
 import { useAuth } from '../../hooks/useAuth';
 import { LoadingSpinner } from '../../components/common/LoadingSpinner';
-import { formatDistance, formatDuration, parseTimestamp } from '../../utils/format';
+import { parseTimestamp } from '../../utils/format';
 import { MaterialCommunityIcons as Icon } from '@expo/vector-icons';
 import { colors } from '../../theme/colors';
 import { useNavigation } from '@react-navigation/native';
 import LocationTrackingService from '../../services/LocationTrackingService';
-import { useLocation } from '../../hooks/useLocation';
+import { useLocationActions } from '../../hooks/useLocation';
 
 export const EmployeeDashboardScreen: React.FC = () => {
   const theme = useTheme();
@@ -22,7 +22,7 @@ export const EmployeeDashboardScreen: React.FC = () => {
   const { width } = useWindowDimensions();
   const isWeb = Platform.OS === 'web';
   const isWideWeb = isWeb && width >= 768;
-  const { primeLocation } = useLocation();
+  const { primeLocation } = useLocationActions();
 
   const { data: profile, isLoading: profileLoading } = useQuery({
     queryKey: ['employee', 'profile', employeeId],
@@ -37,7 +37,7 @@ export const EmployeeDashboardScreen: React.FC = () => {
     staleTime: 5 * 60 * 1000, // 5 minutes fresh
   });
 
-  const { data: currentAttendance, isLoading: attendanceLoading, refetch: refetchAttendance } = useQuery({
+  const { data: currentAttendance, isLoading: attendanceLoading } = useQuery({
     queryKey: ['employee', 'attendance', 'current', employeeId],
     queryFn: async () => {
       const response = await employeeApi.getCurrentAttendance(employeeId);

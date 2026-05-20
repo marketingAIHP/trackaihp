@@ -1,5 +1,6 @@
 import * as Location from 'expo-location';
 import {
+  PlatformLastKnownLocationOptions,
   LocationPermissionResult,
   PlatformLocationOptions,
   PlatformLocationResult,
@@ -45,6 +46,17 @@ function sleep(ms: number) {
   });
 }
 
+export async function getPlatformLastKnownLocation(
+  options?: PlatformLastKnownLocationOptions
+): Promise<PlatformLocationResult | null> {
+  const lastKnown = await Location.getLastKnownPositionAsync({
+    maxAge: options?.maxAgeMs,
+    requiredAccuracy: options?.requiredAccuracy,
+  });
+
+  return lastKnown ? toResult(lastKnown) : null;
+}
+
 export async function requestPlatformLocationPermission(): Promise<LocationPermissionResult> {
   const { status, canAskAgain } = await Location.requestForegroundPermissionsAsync();
   return {
@@ -66,14 +78,13 @@ export async function getPlatformCurrentLocation(
     retryDelayMs = DEFAULT_RETRY_DELAY_MS,
   } = options || {};
 
-  const cached = await Location.getLastKnownPositionAsync({
-    maxAge: maxAgeMs,
+  const cached = await getPlatformLastKnownLocation({
+    maxAgeMs,
     requiredAccuracy: targetAccuracy,
   });
 
-  const cachedAccuracy = cached?.coords.accuracy ?? Infinity;
-  const cachedAgeMs =
-    typeof cached?.timestamp === 'number' ? Date.now() - cached.timestamp : Infinity;
+  const cachedAccuracy = cached?.accuracy ?? Infinity;
+  const cachedAgeMs = typeof cached?.timestamp === 'number' ? Date.now() - cached.timestamp : Infinity;
   const canUseCached =
     preferCached &&
     !!cached &&
@@ -81,7 +92,7 @@ export async function getPlatformCurrentLocation(
     cachedAccuracy <= targetAccuracy;
 
   if (canUseCached && cached) {
-    return toResult(cached);
+    return cached;
   }
 
   let bestLocation: Location.LocationObject | null = null;
@@ -128,7 +139,7 @@ export async function watchPlatformLocation(
 ): Promise<PlatformLocationSubscription> {
   const subscription = await Location.watchPositionAsync(
     {
-      accuracy: Location.Accuracy.Balanced,
+      accuracy: options.accuracy ?? Location.Accuracy.High,
       distanceInterval: options.distanceInterval ?? 5,
       timeInterval: options.timeInterval ?? 5000,
     },

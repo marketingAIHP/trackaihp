@@ -21,6 +21,11 @@ export interface PlatformLocationOptions {
   retryDelayMs?: number;
 }
 
+export interface PlatformLastKnownLocationOptions {
+  maxAgeMs?: number;
+  requiredAccuracy?: number;
+}
+
 export interface PlatformLocationWatchOptions {
   distanceInterval?: number;
   timeInterval?: number;

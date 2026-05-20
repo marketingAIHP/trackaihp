@@ -1,17 +1,20 @@
-import React, { createContext, useMemo, useState, useEffect } from 'react';
+import React, { createContext, useEffect, useMemo } from 'react';
 import attendanceLocationManager, {
+  type LocationManagerCachedSnapshotOptions,
   type LocationManagerRequestOptions,
-  type LocationManagerState,
 } from '../services/attendanceLocationManager';
 import type { Coordinates, LocationSnapshot } from '../types';
 
-export interface LocationContextValue extends LocationManagerState {
+export interface LocationContextValue {
   getCurrentLocation: (
     options?: LocationManagerRequestOptions
   ) => Promise<Coordinates | null>;
   getCurrentLocationSnapshot: (
     options?: LocationManagerRequestOptions
   ) => Promise<LocationSnapshot | null>;
+  getCachedLocationSnapshot: (
+    options?: LocationManagerCachedSnapshotOptions
+  ) => LocationSnapshot | null;
   refreshLocation: (
     options?: LocationManagerRequestOptions
   ) => Promise<LocationSnapshot | null>;
@@ -32,12 +35,6 @@ export function LocationProvider({
   children,
   enabled = true,
 }: LocationProviderProps) {
-  const [locationState, setLocationState] = useState<LocationManagerState>(() =>
-    attendanceLocationManager.getState()
-  );
-
-  useEffect(() => attendanceLocationManager.subscribe(setLocationState), []);
-
   useEffect(() => {
     if (!enabled) {
       attendanceLocationManager.stop();
@@ -53,12 +50,14 @@ export function LocationProvider({
 
   const value = useMemo<LocationContextValue>(
     () => ({
-      ...locationState,
       getCurrentLocation: async (options) => {
         const snapshot = await attendanceLocationManager.getCurrentLocationSnapshot(options);
         return snapshot?.coordinates ?? null;
       },
       getCurrentLocationSnapshot: attendanceLocationManager.getCurrentLocationSnapshot.bind(
+        attendanceLocationManager
+      ),
+      getCachedLocationSnapshot: attendanceLocationManager.getCachedLocationSnapshot.bind(
         attendanceLocationManager
       ),
       refreshLocation: (options) =>
@@ -79,7 +78,7 @@ export function LocationProvider({
           callback(snapshot.coordinates);
         }),
     }),
-    [locationState]
+    []
   );
 
   return <LocationContext.Provider value={value}>{children}</LocationContext.Provider>;

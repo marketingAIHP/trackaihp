@@ -4,25 +4,31 @@ import type { Coordinates, LocationSnapshot } from '../types';
 import { calculateDistance } from '../utils/geofence';
 import {
   getPlatformCurrentLocation,
+  getPlatformLastKnownLocation,
   requestPlatformLocationPermission,
   watchPlatformLocation,
 } from './locationAdapter';
 import type {
+  PlatformLastKnownLocationOptions,
   PlatformLocationOptions,
   PlatformLocationResult,
   PlatformLocationSubscription,
 } from './locationAdapter.types';
 
-const WATCH_TIME_INTERVAL_MS = 5000;
-const WATCH_DISTANCE_INTERVAL_METERS = 0;
-const DEFAULT_CACHE_MAX_AGE_MS = 20000;
-const STALE_CACHE_FALLBACK_AGE_MS = 60000;
-const DEFAULT_TIMEOUT_MS = 4500;
+const WATCH_TIME_INTERVAL_MS = 4000;
+const WATCH_DISTANCE_INTERVAL_METERS = 5;
+const WATCH_ACCURACY_LEVEL = 4; // expo-location Accuracy.High
+const DEFAULT_CACHE_MAX_AGE_MS = 30000;
+const STALE_CACHE_FALLBACK_AGE_MS = 120000;
+const STARTUP_LAST_KNOWN_MAX_AGE_MS = 120000;
+const STARTUP_LAST_KNOWN_REQUIRED_ACCURACY_METERS = 150;
+const DEFAULT_TIMEOUT_MS = 4000;
 const DEFAULT_RETRY_COUNT = 1;
-const DEFAULT_RETRY_DELAY_MS = 700;
-const MAX_WATCH_ACCURACY_METERS = 100;
-const MIN_DISTANCE_FOR_UI_UPDATE_METERS = 3;
-const MIN_ACCURACY_DELTA_METERS = 5;
+const DEFAULT_RETRY_DELAY_MS = 600;
+const DEFAULT_WATCH_WARMUP_TIMEOUT_MS = 1800;
+const MAX_WATCH_ACCURACY_METERS = 120;
+const MIN_DISTANCE_FOR_UI_UPDATE_METERS = 5;
+const MIN_ACCURACY_DELTA_METERS = 8;
 
 export interface LocationManagerState {
   coordinates: Coordinates | null;
@@ -37,6 +43,11 @@ export interface LocationManagerState {
 
 export interface LocationManagerRequestOptions extends PlatformLocationOptions {
   allowStaleFallback?: boolean;
+}
+
+export interface LocationManagerCachedSnapshotOptions {
+  maxAgeMs?: number;
+  targetAccuracy?: number;
 }
 
 type StateListener = (state: LocationManagerState) => void;
@@ -59,6 +70,7 @@ let watchSubscription: PlatformLocationSubscription | null = null;
 let appStateSubscription: { remove: () => void } | null = null;
 let permissionPromise: Promise<boolean> | null = null;
 let locationRequestPromise: Promise<LocationSnapshot | null> | null = null;
+let primeLocationPromise: Promise<LocationSnapshot | null> | null = null;
 let watchStartPromise: Promise<void> | null = null;
 let isStarted = false;
 
@@ -96,6 +108,21 @@ function isSnapshotUsable(
   return isSnapshotFresh(snapshot, maxAgeMs) && isSnapshotAccurateEnough(snapshot, targetAccuracy);
 }
 
+async function hydrateFromLastKnownLocation(
+  options?: PlatformLastKnownLocationOptions
+): Promise<LocationSnapshot | null> {
+  try {
+    const lastKnown = await getPlatformLastKnownLocation(options);
+    if (!lastKnown) {
+      return null;
+    }
+
+    return publishSnapshot(toSnapshot(lastKnown));
+  } catch {
+    return null;
+  }
+}
+
 function normalizeLocationError(error: any): string {
   if (error?.code === 'E_LOCATION_SERVICES_DISABLED') {
     return 'Location services are disabled';
@@ -122,8 +149,17 @@ function hasMeaningfulSnapshotChange(nextSnapshot: LocationSnapshot): boolean {
     state.accuracy === null ||
     nextSnapshot.accuracy === null ||
     Math.abs(state.accuracy - nextSnapshot.accuracy) >= MIN_ACCURACY_DELTA_METERS;
+  const crossedAttendanceAccuracyThreshold =
+    isFiniteAccuracy(state.accuracy) &&
+    isFiniteAccuracy(nextSnapshot.accuracy) &&
+    (state.accuracy <= ATTENDANCE_GPS_ACCURACY_THRESHOLD) !==
+      (nextSnapshot.accuracy <= ATTENDANCE_GPS_ACCURACY_THRESHOLD);
 
-  return distanceMoved >= MIN_DISTANCE_FOR_UI_UPDATE_METERS || accuracyChanged;
+  return (
+    distanceMoved >= MIN_DISTANCE_FOR_UI_UPDATE_METERS ||
+    accuracyChanged ||
+    crossedAttendanceAccuracyThreshold
+  );
 }
 
 function isSameCoordinates(
@@ -211,6 +247,26 @@ async function requestPermission(): Promise<boolean> {
   return permissionPromise;
 }
 
+function getCachedLocationSnapshot(
+  options?: LocationManagerCachedSnapshotOptions
+): LocationSnapshot | null {
+  if (!latestSnapshot) {
+    return null;
+  }
+
+  const maxAgeMs = options?.maxAgeMs ?? DEFAULT_CACHE_MAX_AGE_MS;
+  if (!isSnapshotFresh(latestSnapshot, maxAgeMs)) {
+    return null;
+  }
+
+  const targetAccuracy = options?.targetAccuracy;
+  if (isFiniteAccuracy(targetAccuracy) && !isSnapshotAccurateEnough(latestSnapshot, targetAccuracy)) {
+    return null;
+  }
+
+  return latestSnapshot;
+}
+
 function stopWatch() {
   if (watchSubscription) {
     watchSubscription.remove();
@@ -221,6 +277,54 @@ function stopWatch() {
     ...prev,
     isWatching: false,
   }));
+}
+
+function waitForMatchingWatchSnapshot(
+  targetAccuracy: number,
+  timeoutMs: number
+): Promise<LocationSnapshot | null> {
+  if (
+    latestSnapshot &&
+    isSnapshotUsable(
+      latestSnapshot,
+      targetAccuracy,
+      Math.max(DEFAULT_CACHE_MAX_AGE_MS, timeoutMs)
+    )
+  ) {
+    return Promise.resolve(latestSnapshot);
+  }
+
+  return new Promise<LocationSnapshot | null>((resolve) => {
+    let didResolve = false;
+    let timeoutId: ReturnType<typeof setTimeout> | null = null;
+
+    const unsubscribe = attendanceLocationManager.subscribeToLocationUpdates((snapshot) => {
+      if (didResolve) {
+        return;
+      }
+
+      if (!isSnapshotAccurateEnough(snapshot, targetAccuracy)) {
+        return;
+      }
+
+      didResolve = true;
+      if (timeoutId) {
+        clearTimeout(timeoutId);
+      }
+      unsubscribe();
+      resolve(snapshot);
+    });
+
+    timeoutId = setTimeout(() => {
+      if (didResolve) {
+        return;
+      }
+
+      didResolve = true;
+      unsubscribe();
+      resolve(null);
+    }, timeoutMs);
+  });
 }
 
 async function ensureWatchStarted(): Promise<void> {
@@ -243,7 +347,7 @@ async function ensureWatchStarted(): Promise<void> {
         {
           distanceInterval: WATCH_DISTANCE_INTERVAL_METERS,
           timeInterval: WATCH_TIME_INTERVAL_MS,
-          accuracy: ATTENDANCE_GPS_ACCURACY_THRESHOLD,
+          accuracy: WATCH_ACCURACY_LEVEL,
         },
         (location) => {
           if ((location.accuracy ?? Infinity) > MAX_WATCH_ACCURACY_METERS) {
@@ -301,6 +405,12 @@ const attendanceLocationManager = {
     return latestSnapshot;
   },
 
+  getCachedLocationSnapshot(
+    options?: LocationManagerCachedSnapshotOptions
+  ): LocationSnapshot | null {
+    return getCachedLocationSnapshot(options);
+  },
+
   subscribe(listener: StateListener): () => void {
     stateListeners.add(listener);
     listener(state);
@@ -350,6 +460,7 @@ const attendanceLocationManager = {
 
     latestSnapshot = null;
     locationRequestPromise = null;
+    primeLocationPromise = null;
     permissionPromise = null;
     setState(initialState);
   },
@@ -359,29 +470,67 @@ const attendanceLocationManager = {
   },
 
   async primeLocation(): Promise<LocationSnapshot | null> {
-    if (
-      latestSnapshot &&
-      isSnapshotUsable(
-        latestSnapshot,
-        ATTENDANCE_GPS_ACCURACY_THRESHOLD,
-        DEFAULT_CACHE_MAX_AGE_MS
-      )
-    ) {
-      return latestSnapshot;
+    const strictCachedSnapshot = getCachedLocationSnapshot({
+      maxAgeMs: DEFAULT_CACHE_MAX_AGE_MS,
+      targetAccuracy: ATTENDANCE_GPS_ACCURACY_THRESHOLD,
+    });
+    if (strictCachedSnapshot) {
+      return strictCachedSnapshot;
     }
 
-    return this.refreshLocation(
-      {
-        preferCached: true,
-        targetAccuracy: ATTENDANCE_GPS_ACCURACY_THRESHOLD,
-        maxAgeMs: DEFAULT_CACHE_MAX_AGE_MS,
-        timeoutMs: DEFAULT_TIMEOUT_MS,
-        retryCount: DEFAULT_RETRY_COUNT,
-        retryDelayMs: DEFAULT_RETRY_DELAY_MS,
-        allowStaleFallback: true,
-      },
-      true
-    );
+    if (primeLocationPromise) {
+      return primeLocationPromise;
+    }
+
+    primeLocationPromise = (async () => {
+      const hasPermission = await requestPermission();
+      if (!hasPermission) {
+        return null;
+      }
+
+      await ensureWatchStarted();
+
+      const lastKnownSnapshot = await hydrateFromLastKnownLocation({
+        maxAgeMs: STARTUP_LAST_KNOWN_MAX_AGE_MS,
+        requiredAccuracy: STARTUP_LAST_KNOWN_REQUIRED_ACCURACY_METERS,
+      });
+
+      if (
+        lastKnownSnapshot &&
+        isSnapshotUsable(
+          lastKnownSnapshot,
+          ATTENDANCE_GPS_ACCURACY_THRESHOLD,
+          DEFAULT_CACHE_MAX_AGE_MS
+        )
+      ) {
+        return lastKnownSnapshot;
+      }
+
+      const watchSnapshot = await waitForMatchingWatchSnapshot(
+        ATTENDANCE_GPS_ACCURACY_THRESHOLD,
+        DEFAULT_WATCH_WARMUP_TIMEOUT_MS
+      );
+      if (watchSnapshot) {
+        return watchSnapshot;
+      }
+
+      return this.refreshLocation(
+        {
+          preferCached: true,
+          targetAccuracy: ATTENDANCE_GPS_ACCURACY_THRESHOLD,
+          maxAgeMs: DEFAULT_CACHE_MAX_AGE_MS,
+          timeoutMs: DEFAULT_TIMEOUT_MS,
+          retryCount: DEFAULT_RETRY_COUNT,
+          retryDelayMs: DEFAULT_RETRY_DELAY_MS,
+          allowStaleFallback: true,
+        },
+        true
+      );
+    })().finally(() => {
+      primeLocationPromise = null;
+    });
+
+    return primeLocationPromise;
   },
 
   async refreshLocation(
@@ -422,6 +571,51 @@ const attendanceLocationManager = {
       }
 
       try {
+        await ensureWatchStarted();
+
+        if (requestOptions.preferCached) {
+          const strictCachedSnapshot = getCachedLocationSnapshot({
+            maxAgeMs: requestOptions.maxAgeMs,
+            targetAccuracy: requestOptions.targetAccuracy,
+          });
+          if (strictCachedSnapshot) {
+            return strictCachedSnapshot;
+          }
+
+          const relaxedCachedSnapshot = await hydrateFromLastKnownLocation({
+            maxAgeMs: Math.max(
+              requestOptions.maxAgeMs ?? DEFAULT_CACHE_MAX_AGE_MS,
+              STARTUP_LAST_KNOWN_MAX_AGE_MS
+            ),
+            requiredAccuracy: Math.max(
+              requestOptions.targetAccuracy ?? ATTENDANCE_GPS_ACCURACY_THRESHOLD,
+              STARTUP_LAST_KNOWN_REQUIRED_ACCURACY_METERS
+            ),
+          });
+
+          if (
+            relaxedCachedSnapshot &&
+            isSnapshotUsable(
+              relaxedCachedSnapshot,
+              requestOptions.targetAccuracy ?? ATTENDANCE_GPS_ACCURACY_THRESHOLD,
+              requestOptions.maxAgeMs ?? DEFAULT_CACHE_MAX_AGE_MS
+            )
+          ) {
+            return relaxedCachedSnapshot;
+          }
+        }
+
+        const watchSnapshot = await waitForMatchingWatchSnapshot(
+          requestOptions.targetAccuracy ?? ATTENDANCE_GPS_ACCURACY_THRESHOLD,
+          Math.min(
+            requestOptions.timeoutMs ?? DEFAULT_TIMEOUT_MS,
+            DEFAULT_WATCH_WARMUP_TIMEOUT_MS
+          )
+        );
+        if (watchSnapshot) {
+          return watchSnapshot;
+        }
+
         const location = await getPlatformCurrentLocation(requestOptions);
         return publishSnapshot(toSnapshot(location));
       } catch (error: any) {
@@ -464,8 +658,12 @@ const attendanceLocationManager = {
     const targetAccuracy = options?.targetAccuracy ?? ATTENDANCE_GPS_ACCURACY_THRESHOLD;
     const maxAgeMs = options?.maxAgeMs ?? DEFAULT_CACHE_MAX_AGE_MS;
 
-    if (latestSnapshot && isSnapshotUsable(latestSnapshot, targetAccuracy, maxAgeMs)) {
-      return latestSnapshot;
+    const cachedSnapshot = getCachedLocationSnapshot({
+      maxAgeMs,
+      targetAccuracy,
+    });
+    if (cachedSnapshot) {
+      return cachedSnapshot;
     }
 
     const refreshedSnapshot = await this.refreshLocation(options, !!latestSnapshot);

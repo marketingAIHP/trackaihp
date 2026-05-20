@@ -6,5 +6,6 @@ const adapter =
     : require('./locationAdapter.native');
 
 export const requestPlatformLocationPermission = adapter.requestPlatformLocationPermission as typeof import('./locationAdapter.native').requestPlatformLocationPermission;
+export const getPlatformLastKnownLocation = adapter.getPlatformLastKnownLocation as typeof import('./locationAdapter.native').getPlatformLastKnownLocation;
 export const getPlatformCurrentLocation = adapter.getPlatformCurrentLocation as typeof import('./locationAdapter.native').getPlatformCurrentLocation;
 export const watchPlatformLocation = adapter.watchPlatformLocation as typeof import('./locationAdapter.native').watchPlatformLocation;

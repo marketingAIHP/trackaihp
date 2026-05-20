@@ -6,16 +6,15 @@
  */
 
 import AsyncStorage from '@react-native-async-storage/async-storage';
-import { ATTENDANCE_GPS_ACCURACY_THRESHOLD } from '../constants/config';
 import type { Coordinates } from '../types';
+import { isGpsAccurateEnough } from '../utils/geofence';
 import { employeeApi } from './api';
 import attendanceLocationManager from './attendanceLocationManager';
 
 const THROTTLE_MS = 30000;
 const MIN_DISTANCE_METERS = 5;
 const HEARTBEAT_MS = 60000;
-const LOCATION_CACHE_MAX_AGE_MS = 20000;
-const LOCATION_TIMEOUT_MS = 4500;
+const LOCATION_CACHE_MAX_AGE_MS = 45000;
 
 const STORAGE_KEYS = {
   IS_TRACKING: '@LocSvc:isTracking',
@@ -323,16 +322,15 @@ const LocationTrackingService = {
       const siteIdStr = await AsyncStorage.getItem(STORAGE_KEYS.SITE_ID);
       const siteId = siteIdStr ? parseInt(siteIdStr, 10) : undefined;
 
-      const snapshot = await attendanceLocationManager.getCurrentLocationSnapshot({
-        preferCached: true,
-        targetAccuracy: ATTENDANCE_GPS_ACCURACY_THRESHOLD,
+      const snapshot = attendanceLocationManager.getCachedLocationSnapshot({
         maxAgeMs: LOCATION_CACHE_MAX_AGE_MS,
-        timeoutMs: LOCATION_TIMEOUT_MS,
-        retryCount: 1,
-        allowStaleFallback: true,
       });
 
       if (!snapshot) {
+        return;
+      }
+
+      if (!isGpsAccurateEnough(snapshot.accuracy)) {
         return;
       }
 
