@@ -13,6 +13,7 @@ import { colors } from '../../theme/colors';
 import { useNavigation } from '@react-navigation/native';
 import LocationTrackingService from '../../services/LocationTrackingService';
 import { useLocationActions } from '../../hooks/useLocation';
+import { useEmployeeAttendanceSync } from '../../hooks/useEmployeeAttendanceSync';
 
 export const EmployeeDashboardScreen: React.FC = () => {
   const theme = useTheme();
@@ -23,6 +24,7 @@ export const EmployeeDashboardScreen: React.FC = () => {
   const isWeb = Platform.OS === 'web';
   const isWideWeb = isWeb && width >= 768;
   const { primeLocation } = useLocationActions();
+  const refreshEmployeeAttendance = useEmployeeAttendanceSync(employeeId);
 
   const { data: profile, isLoading: profileLoading } = useQuery({
     queryKey: ['employee', 'profile', employeeId],
@@ -97,12 +99,25 @@ export const EmployeeDashboardScreen: React.FC = () => {
   useFocusEffect(
     React.useCallback(() => {
       void primeLocation();
+      refreshEmployeeAttendance();
+    }, [primeLocation, refreshEmployeeAttendance])
+  );
 
+  useFocusEffect(
+    React.useCallback(() => {
       if (currentAttendance) {
         void LocationTrackingService.forceOneTimeUpdate();
       }
-    }, [currentAttendance, primeLocation])
+    }, [currentAttendance])
   );
+
+  useEffect(() => {
+    if (!employeeId || attendanceLoading || currentAttendance) {
+      return;
+    }
+
+    LocationTrackingService.checkOutEmployee().catch(() => {});
+  }, [attendanceLoading, currentAttendance, employeeId]);
 
   const isLoading = profileLoading || attendanceLoading;
 

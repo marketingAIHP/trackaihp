@@ -1,8 +1,8 @@
 import React, { useEffect } from 'react';
-import { View, StyleSheet, ScrollView, RefreshControl, Pressable, Platform, useWindowDimensions } from 'react-native';
+import { View, StyleSheet, ScrollView, RefreshControl, Pressable, Platform, useWindowDimensions, AppState } from 'react-native';
 import { Text, Card, useTheme, Button, Chip } from 'react-native-paper';
 import { SafeAreaView } from 'react-native-safe-area-context';
-import { useQuery } from '@tanstack/react-query';
+import { useQuery, useQueryClient } from '@tanstack/react-query';
 import { adminApi } from '../../services/api';
 import { useAuth } from '../../hooks/useAuth';
 import { LoadingSpinner } from '../../components/common/LoadingSpinner';
@@ -17,6 +17,7 @@ import { supabase } from '../../services/supabase';
 export const AdminDashboardScreen: React.FC = () => {
   const theme = useTheme();
   const navigation = useNavigation<any>();
+  const queryClient = useQueryClient();
   const { currentUser } = useAuth();
   const adminId = currentUser?.id || 0;
   const { width } = useWindowDimensions();
@@ -112,15 +113,38 @@ export const AdminDashboardScreen: React.FC = () => {
     refetchInterval: 30 * 1000, // Poll every 30 seconds
   });
 
+  const refreshDashboardAttendance = React.useCallback(() => {
+    if (!adminId) return;
+
+    void Promise.all([
+      refetch(),
+      refetchOnSite(),
+      refetchUnreadCount(),
+      queryClient.invalidateQueries({ queryKey: ['admin', 'attendance-log-preview', adminId] }),
+      queryClient.invalidateQueries({ queryKey: ['admin', 'employeesNotAtSite', adminId] }),
+    ]);
+  }, [adminId, queryClient, refetch, refetchOnSite, refetchUnreadCount]);
+
   // Refresh stats when screen comes into focus
   useFocusEffect(
     React.useCallback(() => {
-      if (adminId) {
-        refetch();
-        refetchUnreadCount();
-      }
-    }, [adminId, refetch, refetchUnreadCount])
+      refreshDashboardAttendance();
+    }, [refreshDashboardAttendance])
   );
+
+  useEffect(() => {
+    if (!adminId) return;
+
+    const subscription = AppState.addEventListener('change', (nextState) => {
+      if (nextState === 'active') {
+        refreshDashboardAttendance();
+      }
+    });
+
+    return () => {
+      subscription.remove();
+    };
+  }, [adminId, refreshDashboardAttendance]);
 
   // Real-time subscription for notifications to update badge immediately on new check-in/out
   useEffect(() => {
@@ -139,7 +163,7 @@ export const AdminDashboardScreen: React.FC = () => {
       .on('postgres_changes',
         { event: '*', schema: 'public', table: 'attendance' },
         () => {
-          refetchOnSite();
+          refreshDashboardAttendance();
         }
       )
       .subscribe();
@@ -147,7 +171,7 @@ export const AdminDashboardScreen: React.FC = () => {
     return () => {
       supabase.removeChannel(channel);
     };
-  }, [adminId, refetchUnreadCount, refetchOnSite]);
+  }, [adminId, refetchUnreadCount, refreshDashboardAttendance]);
 
   const { data: attendanceLogPreview } = useQuery({
     queryKey: ['admin', 'attendance-log-preview', adminId],

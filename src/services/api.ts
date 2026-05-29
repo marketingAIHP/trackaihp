@@ -263,7 +263,7 @@ async function expireAttendanceRecordIfNeeded(attendance: any, referenceTime: Da
   const checkoutLongitude =
     attendance.check_in_longitude != null ? Number(attendance.check_in_longitude) : null;
 
-  const { error } = await db.attendance
+  const { data: expiredAttendance, error } = await db.attendance
     .update({
       check_out_time: autoCheckoutAt.toISOString(),
       check_out_latitude: checkoutLatitude,
@@ -272,7 +272,9 @@ async function expireAttendanceRecordIfNeeded(attendance: any, referenceTime: Da
       checkout_type: 'auto_checkout',
     })
     .eq('id', attendance.id)
-    .is('check_out_time', null);
+    .is('check_out_time', null)
+    .select('id, employee_id, site_id, check_out_time, check_out_location_name')
+    .maybeSingle();
 
   if (error) {
     logger.warn('Failed to expire stale attendance record:', {
@@ -281,6 +283,10 @@ async function expireAttendanceRecordIfNeeded(attendance: any, referenceTime: Da
       error,
     });
     return false;
+  }
+
+  if (expiredAttendance) {
+    await createAutoCheckoutNotificationForAttendance(expiredAttendance as any);
   }
 
   if (attendance.employee_id) {
@@ -346,14 +352,16 @@ async function resolveLocationName(
   }
 }
 
+type AdminNotificationInput = {
+  type: 'checkin' | 'checkout' | 'alert' | 'system';
+  title: string;
+  message: string;
+  metadata?: Record<string, any>;
+};
+
 async function findExistingNotification(
   adminId: number,
-  notificationData: {
-    type: 'checkin' | 'checkout' | 'alert' | 'system';
-    title: string;
-    message: string;
-    metadata?: Record<string, any>;
-  }
+  notificationData: AdminNotificationInput
 ): Promise<Notification | null> {
   try {
     let query = supabase
@@ -382,6 +390,67 @@ async function findExistingNotification(
     return (data as Notification | null) || null;
   } catch {
     return null;
+  }
+}
+
+async function createAutoCheckoutNotificationForAttendance(attendance: {
+  id: number;
+  employee_id?: number | null;
+  site_id?: number | null;
+  check_out_time?: string | null;
+  check_out_location_name?: string | null;
+}): Promise<void> {
+  try {
+    if (!attendance.employee_id) {
+      return;
+    }
+
+    const { data: employee } = await db.employees
+      .select('id, first_name, last_name, admin_id')
+      .eq('id', attendance.employee_id)
+      .maybeSingle();
+
+    const adminId = (employee as any)?.admin_id;
+    if (!adminId) {
+      return;
+    }
+
+    let siteName = attendance.check_out_location_name || 'Remote Work';
+    if (attendance.site_id) {
+      const { data: site } = await db.work_sites
+        .select('id, name')
+        .eq('id', attendance.site_id)
+        .maybeSingle();
+      siteName = (site as any)?.name || siteName;
+    }
+
+    const employeeName = `${(employee as any)?.first_name || ''} ${(employee as any)?.last_name || ''}`.trim() || 'Employee';
+    const notificationData: AdminNotificationInput = {
+      type: 'checkout',
+      title: 'Employee Auto Checked Out',
+      message: `${employeeName} was auto checked out from ${siteName}`,
+      metadata: {
+        employee_id: attendance.employee_id,
+        attendance_id: attendance.id,
+        site_id: attendance.site_id ?? null,
+        check_out_time: attendance.check_out_time,
+        check_out_location_name: attendance.check_out_location_name,
+        checkout_type: 'auto_checkout',
+        event: 'auto_checkout',
+      },
+    };
+
+    const existingNotification = await findExistingNotification(adminId, notificationData);
+    if (existingNotification) {
+      return;
+    }
+
+    const notificationResult = await adminApi.createNotification(adminId, notificationData);
+    if (!notificationResult.success) {
+      logger.warn('Failed to create auto-checkout notification:', notificationResult.error);
+    }
+  } catch (error) {
+    logger.warn('Error creating auto-checkout notification:', error);
   }
 }
 
@@ -2055,12 +2124,7 @@ export const adminApi = {
   // Create notification
   async createNotification(
     adminId: number,
-    notificationData: {
-      type: 'checkin' | 'checkout' | 'alert' | 'system';
-      title: string;
-      message: string;
-      metadata?: Record<string, any>;
-    }
+    notificationData: AdminNotificationInput
   ): Promise<ApiResponse<Notification>> {
     try {
       if (!isSupabaseConfigured) {

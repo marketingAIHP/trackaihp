@@ -9,6 +9,7 @@ import { employeeApi } from '../../services/api';
 import { ATTENDANCE_GPS_ACCURACY_THRESHOLD } from '../../constants/config';
 import { useAuth } from '../../hooks/useAuth';
 import { useCachedLocation, useLocationActions } from '../../hooks/useLocation';
+import { useEmployeeAttendanceSync } from '../../hooks/useEmployeeAttendanceSync';
 import {
   Attendance,
   AttendanceSession,
@@ -182,11 +183,13 @@ export const CheckInOutScreen: React.FC = () => {
     refreshLocation: refreshCachedLocation,
     primeLocation,
   } = useLocationActions();
+  const refreshEmployeeAttendance = useEmployeeAttendanceSync(employeeId);
 
   useFocusEffect(
     useCallback(() => {
       void primeLocation();
-    }, [primeLocation])
+      refreshEmployeeAttendance();
+    }, [primeLocation, refreshEmployeeAttendance])
   );
 
   const profileQuery = useQuery({
