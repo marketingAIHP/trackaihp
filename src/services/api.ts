@@ -98,6 +98,65 @@ async function invokePublicFunction<T>(
   }
 }
 
+async function invokeAuthenticatedFunction<T>(
+  functionName: string,
+  body: Record<string, unknown>
+): Promise<{ data: T | null; error: any | null }> {
+  try {
+    const {
+      data: { session },
+    } = await supabase.auth.getSession();
+
+    if (!session?.access_token) {
+      return {
+        data: null,
+        error: { message: 'No authenticated session found' },
+      };
+    }
+
+    const response = await fetch(
+      `${supabaseUrlForDebug.replace(/\/$/, '')}/functions/v1/${functionName}`,
+      {
+        method: 'POST',
+        headers: {
+          ...publicFunctionHeaders(),
+          Authorization: `Bearer ${session.access_token}`,
+          'Content-Type': 'application/json',
+        },
+        body: JSON.stringify(body),
+      }
+    );
+
+    const responseText = await response.text();
+    let parsedBody: any = null;
+    if (responseText) {
+      try {
+        parsedBody = JSON.parse(responseText);
+      } catch {
+        parsedBody = null;
+      }
+    }
+
+    if (!response.ok) {
+      return {
+        data: parsedBody,
+        error: {
+          message:
+            parsedBody?.message ||
+            parsedBody?.error ||
+            responseText ||
+            `Function returned HTTP ${response.status}`,
+          status: response.status,
+        },
+      };
+    }
+
+    return { data: parsedBody as T, error: null };
+  } catch (error: any) {
+    return { data: null, error };
+  }
+}
+
 async function getLegacyInstallationId(): Promise<string> {
   const existing = await AsyncStorage.getItem(LEGACY_INSTALLATION_ID_KEY);
   if (existing) return existing;
@@ -2157,6 +2216,24 @@ export const adminApi = {
           }
         }
         return { success: false, error: error.message || 'Failed to create notification' };
+      }
+
+      const pushResult = await invokeAuthenticatedFunction(
+        'send-admin-notification',
+        {
+          adminId,
+          notification: {
+            id: (data as any)?.id,
+            type: notificationData.type,
+            title: notificationData.title,
+            message: notificationData.message,
+            metadata: notificationData.metadata || null,
+          },
+        }
+      );
+
+      if (pushResult.error) {
+        logger.warn('Failed to deliver admin push notification:', pushResult.error);
       }
 
       return { success: true, data: data as Notification };

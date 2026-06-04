@@ -1,6 +1,7 @@
 import * as Notifications from 'expo-notifications';
 import * as Device from 'expo-device';
 import Constants from 'expo-constants';
+import AsyncStorage from '@react-native-async-storage/async-storage';
 import { Platform } from 'react-native';
 import { SUPABASE_ANON_KEY } from '../constants/config';
 import { logger } from '../utils/logger';
@@ -22,6 +23,7 @@ const FULL_DAY_AUTO_CHECKOUT_MS = 9 * 60 * 60 * 1000;
 const ATTENDANCE_NOTIFICATION_SCOPE = 'attendance';
 const AUTO_CHECKOUT_WARNING_MINUTES = 15;
 const ATTENDANCE_REMINDER_MINUTES = 60;
+const AUTH_STORAGE_KEY = '@auth_token';
 
 type AppUser = { id: number; type: 'admin' | 'employee' };
 
@@ -71,7 +73,10 @@ function getAutoCheckoutDeadline(checkInTime: string | Date): Date {
 
 async function invokeAuthenticatedNotificationFunction(functionName: string, body: Record<string, unknown>) {
     const { data: { session } } = await supabase.auth.getSession();
-    if (!session?.access_token) {
+    const storedAccessToken = await AsyncStorage.getItem(AUTH_STORAGE_KEY);
+    const accessToken = session?.access_token || storedAccessToken;
+
+    if (!accessToken) {
         return { success: false, error: 'No authenticated session found' };
     }
 
@@ -79,7 +84,7 @@ async function invokeAuthenticatedNotificationFunction(functionName: string, bod
         method: 'POST',
         headers: {
             apikey: SUPABASE_ANON_KEY,
-            Authorization: `Bearer ${session.access_token}`,
+            Authorization: `Bearer ${accessToken}`,
             'Content-Type': 'application/json',
         },
         body: JSON.stringify(body),
