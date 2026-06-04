@@ -116,6 +116,13 @@ const config: ExpoConfig = {
       isIosBackgroundLocationEnabled: true,
     },
   ],
+
+  [
+    'expo-notifications',
+    {
+      defaultChannel: 'default',
+    },
+  ],
 ],
   extra: {
     EXPO_PUBLIC_SUPABASE_URL: supabaseUrl,

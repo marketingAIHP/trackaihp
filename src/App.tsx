@@ -21,6 +21,7 @@ import LocationTrackingService from './services/LocationTrackingService';
 import { linking } from './navigation/linking';
 import { LocationProvider } from './providers/LocationProvider';
 import { AppUpdateManager } from './components/common/AppUpdateManager';
+import { registerPushToken, setupNotificationChannels } from './services/notificationService';
 
 // Production-optimized QueryClient configuration - AGGRESSIVE caching to reduce DB load
 const queryClient = new QueryClient({
@@ -90,6 +91,22 @@ function AppContent() {
       AppStateMonitor.stop();
     };
   }, []);
+
+  useEffect(() => {
+    setupNotificationChannels().catch((error) => {
+      logger.warn('[App] Failed to set up notification channels:', error);
+    });
+  }, []);
+
+  useEffect(() => {
+    if (!currentUser) {
+      return;
+    }
+
+    registerPushToken(currentUser).catch((error) => {
+      logger.warn('[App] Failed to register push token:', error);
+    });
+  }, [currentUser]);
 
   if (isLoading) {
     return (

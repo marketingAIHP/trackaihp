@@ -30,6 +30,10 @@ import {
   STORAGE_BUCKETS,
   SUPABASE_ANON_KEY,
 } from '../constants/config';
+import {
+  handleCheckInNotificationSuccess,
+  handleCheckOutNotificationSuccess,
+} from './notificationService';
 import { deleteImage } from '../utils/storage';
 import {
   checkGeofence,
@@ -2761,6 +2765,9 @@ export const employeeApi = {
         }
       }
 
+      const checkInSiteName = (data as any).site?.name || ((data as any).is_remote_location ? 'Remote Work' : undefined);
+      void handleCheckInNotificationSuccess(checkInSiteName, data.check_in_time);
+
       return { success: true, data: data as unknown as Attendance };
     } catch (error: any) {
       return { success: false, error: error.message || 'Check-in failed' };
@@ -2914,6 +2921,9 @@ export const employeeApi = {
           }
         }
       }
+
+      const checkOutSiteName = (attendanceData as any).site?.name || ((attendanceData as any).site_id ? undefined : 'Remote Work');
+      void handleCheckOutNotificationSuccess(checkOutSiteName, effectiveCheckoutType);
 
       return { success: true, data: data as unknown as Attendance };
     } catch (error: any) {
