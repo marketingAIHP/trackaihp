@@ -246,17 +246,36 @@ export async function registerPushToken(user: AppUser | null | undefined) {
 
     try {
         if (Platform.OS === 'web' || !Device.isDevice) {
+            logger.log('[NotificationService] Skipping push token registration for unsupported platform/device', {
+                platform: Platform.OS,
+                isDevice: Device.isDevice,
+                userType: user.type,
+                userId: user.id,
+            });
             return null;
         }
 
         await setupNotificationChannels();
 
         const granted = await requestNotificationPermissions();
-        if (!granted) return null;
+        if (!granted) {
+            logger.warn('[NotificationService] Push permission not granted', {
+                userType: user.type,
+                userId: user.id,
+            });
+            return null;
+        }
 
         const projectId = Constants.expoConfig?.extra?.eas?.projectId || Constants.easConfig?.projectId;
         const tokenResponse = await Notifications.getExpoPushTokenAsync(projectId ? { projectId } : undefined);
         const token = tokenResponse.data;
+
+        logger.log('[NotificationService] Generated Expo push token', {
+            userType: user.type,
+            userId: user.id,
+            projectId,
+            tokenPreview: token ? `${token.slice(0, 12)}...` : null,
+        });
 
         const result = await invokeAuthenticatedNotificationFunction('register-push-token', {
             token,
@@ -267,9 +286,19 @@ export async function registerPushToken(user: AppUser | null | undefined) {
             throw new Error(result.error || 'Failed to register push token');
         }
 
+        logger.log('[NotificationService] Registered Expo push token successfully', {
+            userType: user.type,
+            userId: user.id,
+            platform: Platform.OS,
+        });
+
         return token;
     } catch (error) {
-        logger.warn('[NotificationService] Failed to register push token:', error);
+        logger.error('[NotificationService] Failed to register push token:', {
+            userType: user.type,
+            userId: user.id,
+            error,
+        });
         return null;
     }
 }

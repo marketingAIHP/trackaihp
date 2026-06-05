@@ -7,7 +7,7 @@ import {adminApi} from '../../services/api';
 import {useAuth} from '../../hooks/useAuth';
 import {LoadingSpinner} from '../../components/common/LoadingSpinner';
 import {Notification} from '../../types';
-import {formatRelativeTime} from '../../utils/format';
+import {formatDateTime, formatRelativeTime, parseTimestamp} from '../../utils/format';
 import {MaterialCommunityIcons as Icon} from '@expo/vector-icons';
 import {useFocusEffect} from '@react-navigation/native';
 import {supabase} from '../../services/supabase';
@@ -100,6 +100,14 @@ export const NotificationsScreen: React.FC = () => {
   const renderNotification = ({item}: {item: Notification}) => {
     const isCheckIn = item.type === 'checkin';
     const isCheckOut = item.type === 'checkout';
+    const parsedCreatedAt = parseTimestamp(item.created_at);
+    const diffMs = Date.now() - parsedCreatedAt.getTime();
+    const timestampLabel =
+      Number.isNaN(parsedCreatedAt.getTime())
+        ? 'Unknown time'
+        : diffMs < -60 * 1000
+          ? formatDateTime(parsedCreatedAt)
+          : formatRelativeTime(parsedCreatedAt);
 
     return (
     <Card
@@ -135,7 +143,7 @@ export const NotificationsScreen: React.FC = () => {
               {item.title}
             </Text>
                 <Text variant="bodySmall" style={styles.timestamp}>
-                  {formatRelativeTime(item.created_at)}
+                  {timestampLabel}
                 </Text>
               </View>
             <Text variant="bodyMedium" style={styles.notificationMessage}>

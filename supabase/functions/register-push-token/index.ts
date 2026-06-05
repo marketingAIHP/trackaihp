@@ -31,6 +31,12 @@ serve(async (req: Request) => {
     const token = typeof body?.token === 'string' ? body.token.trim() : '';
     const platform = typeof body?.platform === 'string' ? body.platform.trim().toLowerCase() : '';
 
+    console.log('[register-push-token] Incoming request', {
+      platform,
+      tokenPreview: token ? `${token.slice(0, 12)}...` : null,
+      hasAuthorization: !!authHeader,
+    });
+
     if (!token || !platform) {
       return json({ success: false, error: 'token and platform are required.' }, 400);
     }
@@ -74,8 +80,17 @@ serve(async (req: Request) => {
       .maybeSingle();
 
     if (!admin && !employee) {
+      console.error('[register-push-token] No linked admin or employee record for auth user', {
+        authUserId: user.id,
+      });
       return json({ success: false, error: 'No linked admin or employee record found.' }, 403);
     }
+
+    console.log('[register-push-token] Resolved token owner', {
+      authUserId: user.id,
+      adminId: admin?.id ?? null,
+      employeeId: employee?.id ?? null,
+    });
 
     const payload = {
       token,
@@ -92,8 +107,19 @@ serve(async (req: Request) => {
       .upsert(payload, { onConflict: 'token' });
 
     if (upsertError) {
+      console.error('[register-push-token] Failed to upsert notification token', {
+        adminId: admin?.id ?? null,
+        employeeId: employee?.id ?? null,
+        error: upsertError,
+      });
       return json({ success: false, error: upsertError.message || 'Failed to save push token.' }, 500);
     }
+
+    console.log('[register-push-token] Push token registered successfully', {
+      adminId: admin?.id ?? null,
+      employeeId: employee?.id ?? null,
+      platform,
+    });
 
     return json({
       success: true,

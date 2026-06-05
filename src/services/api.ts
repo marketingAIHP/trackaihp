@@ -2209,6 +2209,12 @@ export const adminApi = {
         .single();
 
       if (error) {
+        logger.error('[adminApi.createNotification] Failed to insert notification row', {
+          adminId,
+          type: notificationData.type,
+          title: notificationData.title,
+          error,
+        });
         if (error.code === '23505') {
           const existingNotification = await findExistingNotification(adminId, notificationData);
           if (existingNotification) {
@@ -2217,6 +2223,13 @@ export const adminApi = {
         }
         return { success: false, error: error.message || 'Failed to create notification' };
       }
+
+      logger.log('[adminApi.createNotification] Notification row created', {
+        adminId,
+        notificationId: (data as any)?.id,
+        type: notificationData.type,
+        title: notificationData.title,
+      });
 
       const pushResult = await invokeAuthenticatedFunction(
         'send-admin-notification',
@@ -2233,7 +2246,17 @@ export const adminApi = {
       );
 
       if (pushResult.error) {
-        logger.warn('Failed to deliver admin push notification:', pushResult.error);
+        logger.error('[adminApi.createNotification] Failed to deliver admin push notification', {
+          adminId,
+          notificationId: (data as any)?.id,
+          error: pushResult.error,
+        });
+      } else {
+        logger.log('[adminApi.createNotification] Admin push delivery invoked', {
+          adminId,
+          notificationId: (data as any)?.id,
+          pushResult: pushResult.data,
+        });
       }
 
       return { success: true, data: data as Notification };

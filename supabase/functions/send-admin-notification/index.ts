@@ -13,6 +13,16 @@ type NotificationPayload = {
   metadata?: Record<string, unknown> | null;
 };
 
+type ExpoPushTicket = {
+  status?: 'ok' | 'error';
+  id?: string;
+  message?: string;
+  details?: {
+    error?: string;
+    [key: string]: unknown;
+  };
+};
+
 serve(async (req: Request) => {
   if (req.method === 'OPTIONS') {
     return new Response('ok', { headers: corsHeaders });
@@ -38,6 +48,13 @@ serve(async (req: Request) => {
     const body = await req.json();
     const adminId = Number(body?.adminId);
     const notification = (body?.notification || {}) as NotificationPayload;
+
+    console.log('[send-admin-notification] Incoming request', {
+      adminId,
+      notificationId: notification.id ?? null,
+      type: notification.type ?? null,
+      title: notification.title ?? null,
+    });
 
     if (!Number.isFinite(adminId) || !notification?.title || !notification?.message) {
       return json({ success: false, error: 'adminId, notification.title, and notification.message are required.' }, 400);
@@ -82,6 +99,13 @@ serve(async (req: Request) => {
       requesterEmployee?.admin_id === adminId;
 
     if (!allowed) {
+      console.error('[send-admin-notification] Requester is not allowed to send for admin', {
+        adminId,
+        authUserId: user.id,
+        requesterAdminId: requesterAdmin?.id ?? null,
+        requesterEmployeeId: requesterEmployee?.id ?? null,
+        requesterEmployeeAdminId: requesterEmployee?.admin_id ?? null,
+      });
       return json({ success: false, error: 'You are not allowed to send notifications for this admin.' }, 403);
     }
 
@@ -92,12 +116,24 @@ serve(async (req: Request) => {
       .eq('is_active', true);
 
     if (tokenError) {
+      console.error('[send-admin-notification] Failed to load admin tokens', {
+        adminId,
+        error: tokenError,
+      });
       return json({ success: false, error: tokenError.message || 'Failed to load admin notification tokens.' }, 500);
     }
 
     if (!tokenRows || tokenRows.length === 0) {
+      console.warn('[send-admin-notification] No active admin tokens found', {
+        adminId,
+      });
       return json({ success: true, data: { sent: 0, reason: 'No active admin notification tokens.' } });
     }
+
+    console.log('[send-admin-notification] Loaded admin tokens', {
+      adminId,
+      tokenCount: tokenRows.length,
+    });
 
     const messages = tokenRows.map((row) => ({
       to: row.token,
@@ -117,6 +153,12 @@ serve(async (req: Request) => {
       },
     }));
 
+    console.log('[send-admin-notification] Sending Expo push request', {
+      adminId,
+      tokenCount: messages.length,
+      notificationType: notification.type ?? null,
+    });
+
     const expoResponse = await fetch('https://exp.host/--/api/v2/push/send', {
       method: 'POST',
       headers: {
@@ -129,6 +171,11 @@ serve(async (req: Request) => {
     const expoResult = await expoResponse.json().catch(() => null);
 
     if (!expoResponse.ok) {
+      console.error('[send-admin-notification] Expo push request failed', {
+        adminId,
+        status: expoResponse.status,
+        expoResult,
+      });
       return json(
         {
           success: false,
@@ -138,23 +185,57 @@ serve(async (req: Request) => {
       );
     }
 
-    await adminClient
-      .from('notification_tokens')
-      .update({
-        last_sent_at: new Date().toISOString(),
-        last_error: null,
-        updated_at: new Date().toISOString(),
+    console.log('[send-admin-notification] Expo push response received', {
+      adminId,
+      expoResult,
+    });
+
+    const tickets = Array.isArray(expoResult?.data) ? (expoResult.data as ExpoPushTicket[]) : [];
+    const nowIso = new Date().toISOString();
+
+    await Promise.all(
+      tokenRows.map(async (row, index) => {
+        const ticket = tickets[index];
+        const ticketError =
+          ticket?.status === 'error'
+            ? ticket?.message || ticket?.details?.error || 'Unknown Expo push error'
+            : null;
+
+        const updatePayload: Record<string, unknown> = {
+          updated_at: nowIso,
+          last_sent_at: nowIso,
+          last_error: ticketError,
+        };
+
+        if (ticket?.details?.error === 'DeviceNotRegistered') {
+          updatePayload.is_active = false;
+        }
+
+        await adminClient
+          .from('notification_tokens')
+          .update(updatePayload)
+          .eq('id', row.id);
       })
-      .in('id', tokenRows.map((row) => row.id));
+    );
+
+    const failedTickets = tickets.filter((ticket) => ticket?.status === 'error');
+    if (failedTickets.length > 0) {
+      console.error('[send-admin-notification] Expo push returned ticket errors', {
+        adminId,
+        failedTickets,
+      });
+    }
 
     return json({
       success: true,
       data: {
         sent: tokenRows.length,
+        failed: failedTickets.length,
         expo: expoResult,
       },
     });
   } catch (error) {
+    console.error('[send-admin-notification] Unexpected error', error);
     return json(
       {
         success: false,
