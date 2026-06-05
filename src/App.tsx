@@ -5,7 +5,7 @@ import { PaperProvider } from 'react-native-paper';
 import { QueryClient, QueryClientProvider } from '@tanstack/react-query';
 import { GestureHandlerRootView } from 'react-native-gesture-handler';
 import { SafeAreaProvider } from 'react-native-safe-area-context';
-import { StyleSheet } from 'react-native';
+import { AppState, StyleSheet } from 'react-native';
 import { lightTheme } from './theme';
 import { AuthNavigator } from './navigation/AuthNavigator';
 import { AdminNavigator } from './navigation/AdminNavigator';
@@ -103,9 +103,45 @@ function AppContent() {
       return;
     }
 
-    registerPushToken(currentUser).catch((error) => {
-      logger.warn('[App] Failed to register push token:', error);
+    let isCancelled = false;
+
+    const attemptRegistration = async (reason: string) => {
+      try {
+        logger.error('[PushRegistration] Attempting push token registration', {
+          reason,
+          userType: currentUser.type,
+          userId: currentUser.id,
+        });
+        await registerPushToken(currentUser);
+      } catch (error) {
+        logger.error('[PushRegistration] Push token registration attempt failed', {
+          reason,
+          userType: currentUser.type,
+          userId: currentUser.id,
+          error,
+        });
+      }
+    };
+
+    const initialTimer = setTimeout(() => {
+      if (!isCancelled) {
+        void attemptRegistration('post-login-delay');
+      }
+    }, 1500);
+
+    const subscription = AppState.addEventListener('change', (nextState) => {
+      if (nextState === 'active' && !isCancelled) {
+        void attemptRegistration('app-active');
+      }
     });
+
+    void attemptRegistration('current-user-ready');
+
+    return () => {
+      isCancelled = true;
+      clearTimeout(initialTimer);
+      subscription.remove();
+    };
   }, [currentUser]);
 
   if (isLoading) {

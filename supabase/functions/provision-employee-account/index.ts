@@ -318,7 +318,8 @@ async function findAuthUserByEmail(
     const users = listUsersResult.data.users ?? [];
     const matchedUser =
       users.find(
-        (user) => user.email?.trim().toLowerCase() === normalizedEmail,
+        (user: { email?: string | null }) =>
+          user.email?.trim().toLowerCase() === normalizedEmail,
       ) ?? null;
 
     if (matchedUser) {

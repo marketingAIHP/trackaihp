@@ -77,6 +77,9 @@ async function invokeAuthenticatedNotificationFunction(functionName: string, bod
     const accessToken = session?.access_token || storedAccessToken;
 
     if (!accessToken) {
+        logger.error('[NotificationService] No access token available for notification function invocation', {
+            functionName,
+        });
         return { success: false, error: 'No authenticated session found' };
     }
 
@@ -102,6 +105,12 @@ async function invokeAuthenticatedNotificationFunction(functionName: string, bod
     }
 
     if (!response.ok || parsedBody?.success === false) {
+        logger.error('[NotificationService] Notification function invocation failed', {
+            functionName,
+            status: response.status,
+            responseText,
+            parsedBody,
+        });
         return {
             success: false,
             error:
@@ -112,6 +121,10 @@ async function invokeAuthenticatedNotificationFunction(functionName: string, bod
         };
     }
 
+    logger.error('[NotificationService] Notification function invocation succeeded', {
+        functionName,
+        data: parsedBody?.data ?? parsedBody,
+    });
     return { success: true, data: parsedBody?.data ?? parsedBody };
 }
 
@@ -259,7 +272,7 @@ export async function registerPushToken(user: AppUser | null | undefined) {
 
         const granted = await requestNotificationPermissions();
         if (!granted) {
-            logger.warn('[NotificationService] Push permission not granted', {
+            logger.error('[NotificationService] Push permission not granted', {
                 userType: user.type,
                 userId: user.id,
             });
@@ -270,7 +283,7 @@ export async function registerPushToken(user: AppUser | null | undefined) {
         const tokenResponse = await Notifications.getExpoPushTokenAsync(projectId ? { projectId } : undefined);
         const token = tokenResponse.data;
 
-        logger.log('[NotificationService] Generated Expo push token', {
+        logger.error('[NotificationService] Generated Expo push token', {
             userType: user.type,
             userId: user.id,
             projectId,
@@ -286,7 +299,7 @@ export async function registerPushToken(user: AppUser | null | undefined) {
             throw new Error(result.error || 'Failed to register push token');
         }
 
-        logger.log('[NotificationService] Registered Expo push token successfully', {
+        logger.error('[NotificationService] Registered Expo push token successfully', {
             userType: user.type,
             userId: user.id,
             platform: Platform.OS,
