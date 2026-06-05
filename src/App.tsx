@@ -99,7 +99,14 @@ function AppContent() {
   }, []);
 
   useEffect(() => {
+    logger.error('[PushRegistrationEffect] Effect evaluated', {
+      hasCurrentUser: !!currentUser,
+      userType: currentUser?.type ?? null,
+      userId: currentUser?.id ?? null,
+    });
+
     if (!currentUser) {
+      logger.error('[PushRegistrationEffect] Exiting before registration because currentUser is missing');
       return;
     }
 
@@ -107,7 +114,7 @@ function AppContent() {
 
     const attemptRegistration = async (reason: string) => {
       try {
-        logger.error('[PushRegistration] Attempting push token registration', {
+        logger.error('[PushRegistrationEffect] Calling registerPushToken()', {
           reason,
           userType: currentUser.type,
           userId: currentUser.id,
