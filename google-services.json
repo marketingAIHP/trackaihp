@@ -1,0 +1,29 @@
+{
+  "project_info": {
+    "project_number": "376069044992",
+    "project_id": "aihp-crewtrack",
+    "storage_bucket": "aihp-crewtrack.firebasestorage.app"
+  },
+  "client": [
+    {
+      "client_info": {
+        "mobilesdk_app_id": "1:376069044992:android:2c4210fdb5e155f69891e5",
+        "android_client_info": {
+          "package_name": "com.aihp.crewtrack"
+        }
+      },
+      "oauth_client": [],
+      "api_key": [
+        {
+          "current_key": "AIzaSyDDIhplbME5R8jJTuqFrlRbPSnMJDncnnA"
+        }
+      ],
+      "services": {
+        "appinvite_service": {
+          "other_platform_oauth_client": []
+        }
+      }
+    }
+  ],
+  "configuration_version": "1"
+}

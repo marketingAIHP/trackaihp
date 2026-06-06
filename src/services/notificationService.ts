@@ -240,7 +240,7 @@ export async function showLocalNotification(title: string, body: string, data?: 
  */
 export async function requestNotificationPermissions(): Promise<boolean> {
     if (Platform.OS === 'web') {
-        logger.error('LOG 2: Notification permission status', {
+        logger.error('[NotificationService] LOG 2: Notification permission status', {
             platform: Platform.OS,
             existingStatus: 'web-unsupported',
             finalStatus: 'web-unsupported',
@@ -256,7 +256,7 @@ export async function requestNotificationPermissions(): Promise<boolean> {
         finalStatus = status;
     }
 
-    logger.error('LOG 2: Notification permission status', {
+    logger.error('[NotificationService] LOG 2: Notification permission status', {
         platform: Platform.OS,
         existingStatus,
         finalStatus,
@@ -269,7 +269,7 @@ export async function registerPushToken(user: AppUser | null | undefined) {
     if (!user) return null;
 
     try {
-        logger.error('LOG 1: Entering registerPushToken()', {
+        logger.error('[NotificationService] LOG 1: Entering registerPushToken()', {
             userType: user.type,
             userId: user.id,
             platform: Platform.OS,
@@ -277,7 +277,7 @@ export async function registerPushToken(user: AppUser | null | undefined) {
         });
 
         if (Platform.OS === 'web' || !Device.isDevice) {
-            logger.error('LOG 7: Registration failure', {
+            logger.error('[NotificationService] LOG 7: Registration failure', {
                 platform: Platform.OS,
                 isDevice: Device.isDevice,
                 userType: user.type,
@@ -302,14 +302,14 @@ export async function registerPushToken(user: AppUser | null | undefined) {
         const tokenResponse = await Notifications.getExpoPushTokenAsync(projectId ? { projectId } : undefined);
         const token = tokenResponse.data;
 
-        logger.error('LOG 3: Expo token generated', {
+        logger.error('[NotificationService] LOG 3: Expo token generated', {
             userType: user.type,
             userId: user.id,
             projectId,
             tokenPreview: token ? `${token.slice(0, 12)}...` : null,
         });
 
-        logger.error('LOG 4: Calling register-push-token', {
+        logger.error('[NotificationService] LOG 4: Calling register-push-token', {
             userType: user.type,
             userId: user.id,
             platform: Platform.OS,
@@ -320,7 +320,7 @@ export async function registerPushToken(user: AppUser | null | undefined) {
             platform: Platform.OS,
         });
 
-        logger.error('LOG 5: Edge function response', {
+        logger.error('[NotificationService] LOG 5: Edge function response', {
             userType: user.type,
             userId: user.id,
             success: result.success,
@@ -331,7 +331,7 @@ export async function registerPushToken(user: AppUser | null | undefined) {
             throw new Error(result.error || 'Failed to register push token');
         }
 
-        logger.error('LOG 6: Registration success', {
+        logger.error('[NotificationService] LOG 6: Registration success', {
             userType: user.type,
             userId: user.id,
             platform: Platform.OS,
@@ -339,7 +339,7 @@ export async function registerPushToken(user: AppUser | null | undefined) {
 
         return token;
     } catch (error) {
-        logger.error('LOG 7: Registration failure', {
+        logger.error('[NotificationService] LOG 7: Registration failure', {
             userType: user.type,
             userId: user.id,
             error,

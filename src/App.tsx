@@ -22,6 +22,8 @@ import { linking } from './navigation/linking';
 import { LocationProvider } from './providers/LocationProvider';
 import { AppUpdateManager } from './components/common/AppUpdateManager';
 import { registerPushToken, setupNotificationChannels } from './services/notificationService';
+import Constants from 'expo-constants';
+import { env } from './config/env';
 
 // Production-optimized QueryClient configuration - AGGRESSIVE caching to reduce DB load
 const queryClient = new QueryClient({
@@ -65,6 +67,17 @@ function AppContent() {
   useNotificationListener();
 
   useEffect(() => {
+    logger.error('[PushRegistrationEffect] Runtime environment', {
+      supabaseUrl: env.supabaseUrl || null,
+      easProjectId:
+        Constants.expoConfig?.extra?.eas?.projectId ||
+        Constants.easConfig?.projectId ||
+        null,
+      runtimeEnvironment: Constants.expoConfig?.extra?.environment || null,
+      appVariant: Constants.expoConfig?.extra?.deployment?.variant || null,
+      executionEnvironment: Constants.executionEnvironment || null,
+    });
+
     // Validate environment variables
     const validation = validateEnvironment();
     if (!validation.isValid) {

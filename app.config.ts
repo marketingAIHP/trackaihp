@@ -10,9 +10,33 @@ const getEnv = (...keys: string[]) =>
 const supabaseUrl = getEnv('EXPO_PUBLIC_SUPABASE_URL');
 const supabaseAnonKey = getEnv('EXPO_PUBLIC_SUPABASE_ANON_KEY');
 const googleMapsApiKey = getEnv('EXPO_PUBLIC_GOOGLE_MAPS_API_KEY');
+const getExistingPath = (...candidates: string[]) => {
+  const fsModule = eval('require')('fs');
+  const pathModule = eval('require')('path');
+
+  for (const candidate of candidates) {
+    if (!candidate) continue;
+    const absolute = pathModule.isAbsolute(candidate) ? candidate : pathModule.resolve(candidate);
+    if (fsModule.existsSync(absolute)) {
+      return absolute;
+    }
+  }
+  return undefined;
+};
 
 const appVariant = (getEnv('APP_VARIANT').toLowerCase() || 'production') as AppVariant;
 const isStagingVariant = appVariant === 'staging';
+const androidGoogleServicesFile = isStagingVariant
+  ? getExistingPath(
+      getEnv('EXPO_ANDROID_GOOGLE_SERVICES_FILE_STAGING', 'GOOGLE_SERVICES_FILE_STAGING'),
+      './google-services.staging.json',
+      './android/app/google-services.json'
+    )
+  : getExistingPath(
+      getEnv('EXPO_ANDROID_GOOGLE_SERVICES_FILE', 'GOOGLE_SERVICES_FILE'),
+      './google-services.json',
+      './android/app/google-services.json'
+    );
 
 const appName = isStagingVariant ? 'AIHP CrewTrack Staging' : 'AIHP CrewTrack';
 const androidPackage = isStagingVariant
@@ -65,6 +89,7 @@ const config: ExpoConfig = {
   },
   android: {
     package: androidPackage,
+    googleServicesFile: androidGoogleServicesFile,
     blockedPermissions: ['android.permission.RECORD_AUDIO'],
     adaptiveIcon: {
       foregroundImage: './assets/adaptive-icon.png',
