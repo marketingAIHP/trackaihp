@@ -82,6 +82,7 @@ sql.md
 !supabase/migrations/20260529_add_auto_checkout_scheduler_notifications.sql
 !supabase/migrations/20260604_add_push_notification_delivery.sql
 !supabase/migrations/20260605_add_notification_delivery_logs_and_daily_reminders.sql
+!supabase/migrations/20260606_improve_daily_reminder_audit_logging.sql
 !EAS_DEPLOYMENT.md
 
 # Testing

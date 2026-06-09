@@ -229,7 +229,9 @@ export interface SiteAttendanceSummary {
 
 export interface AttendanceReportRecord {
   attendance_id: number;
+  employee_record_id: number;
   employee_name: string;
+  employee_code: string;
   date: string;
   check_in_time: string;
   check_out_time?: string;
@@ -237,6 +239,11 @@ export interface AttendanceReportRecord {
   check_out_location: string;
   checkout_type: CheckoutType | 'pending';
   site_name: string;
+  full_address: string;
+  latitude: number | null;
+  longitude: number | null;
+  is_remote_location: boolean;
+  session_duration: string;
   attendance_status: 'on_site' | 'checked_out' | 'remote_work';
 }
 

@@ -7,9 +7,10 @@ import { adminApi } from '../../services/api';
 import { useAuth } from '../../hooks/useAuth';
 import { AttendanceReportFilters, AttendanceStatusFilter } from '../../types';
 import { LoadingSpinner } from '../../components/common/LoadingSpinner';
-import { formatDate } from '../../utils/format';
+import { formatDate, formatDateTime } from '../../utils/format';
 import { savePlatformReportFile } from '../../services/reportDownloader';
 import {
+  AttendanceReportExportMeta,
   buildAttendanceReportCsv,
   buildAttendanceReportPdf,
 } from '../../services/reports/exportBuilders';
@@ -127,6 +128,17 @@ function formatOptionLabel(value: string) {
     .join(' ');
 }
 
+function buildReportTypeLabel(
+  period: NonNullable<AttendanceReportFilters['period']>,
+  selectedYear: number,
+  selectedQuarter: number
+) {
+  if (period === 'monthly') return 'Monthly Report';
+  if (period === 'quarterly') return `Quarterly Report (Q${selectedQuarter} ${selectedYear})`;
+  if (period === 'yearly') return `Yearly Report (${selectedYear})`;
+  return 'Custom Date Range Report';
+}
+
 export const ReportsScreen: React.FC = () => {
   const theme = useTheme();
   const { currentUser } = useAuth();
@@ -205,6 +217,13 @@ export const ReportsScreen: React.FC = () => {
     enabled: !!adminId,
     staleTime: 300000,
   });
+  const selectedEmployee = useMemo(
+    () => (employees || []).find((employee: any) => employee.id === employeeId),
+    [employeeId, employees]
+  );
+  const selectedEmployeeName = selectedEmployee
+    ? `${selectedEmployee.first_name} ${selectedEmployee.last_name}`.trim()
+    : undefined;
 
   const { data: reportRows, isLoading, refetch } = useQuery({
     queryKey: ['admin', 'reports', adminId, filters],
@@ -257,9 +276,40 @@ export const ReportsScreen: React.FC = () => {
         return;
       }
 
+      const contextLabel =
+        period === 'monthly'
+          ? `${selectedMonthLabel} ${selectedYear}`
+          : period === 'quarterly'
+            ? `Q${selectedQuarter} ${selectedYear}`
+            : period === 'yearly'
+              ? `${selectedYear}`
+              : `${formatDate(filters.dateFrom || manualDateFrom)} - ${formatDate(filters.dateTo || manualDateTo)}`;
+      const generatedOn = formatDateTime(new Date());
+      const generatedBy = currentUser?.name || currentUser?.email || 'Admin User';
+      const exportMeta: AttendanceReportExportMeta = {
+        title: selectedEmployeeName
+          ? `Attendance Report - Employee: ${selectedEmployeeName} - ${contextLabel}`
+          : period === 'monthly'
+            ? `Attendance Report - All Employees - ${contextLabel}`
+            : `Attendance Report - ${contextLabel}`,
+        reportType: buildReportTypeLabel(period, selectedYear, selectedQuarter),
+        dateRange:
+          filters.dateFrom && filters.dateTo
+            ? `${formatDate(filters.dateFrom)} - ${formatDate(filters.dateTo)}`
+            : contextLabel,
+        generatedBy,
+        generatedOn,
+        totalRecords: rows.length,
+        totalEmployees: new Set(rows.map((row) => row.employee_record_id)).size,
+        manualCheckouts: rows.filter((row) => row.checkout_type === 'manual_checkout').length,
+        autoCheckouts: rows.filter((row) => row.checkout_type === 'auto_checkout').length,
+        remoteCheckIns: rows.filter((row) => row.is_remote_location).length,
+        employeeName: selectedEmployeeName,
+      };
+
       const path = await savePlatformReportFile(
         `attendance-report-${downloadSuffix}.pdf`,
-        buildAttendanceReportPdf(rows),
+        buildAttendanceReportPdf(rows, exportMeta),
         'application/pdf'
       );
 
@@ -452,7 +502,7 @@ export const ReportsScreen: React.FC = () => {
                     <Text variant="titleSmall" style={styles.label}>Employee</Text>
                     <Button mode="outlined" onPress={() => setEmployeeMenuVisible(true)} style={styles.dropdownButton} contentStyle={styles.dropdownContent}>
                       {employeeId
-                        ? `${(employees || []).find((employee: any) => employee.id === employeeId)?.first_name || ''} ${(employees || []).find((employee: any) => employee.id === employeeId)?.last_name || ''}`.trim()
+                        ? selectedEmployeeName
                         : 'All Employees'}
                     </Button>
                   </View>

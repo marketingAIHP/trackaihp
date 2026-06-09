@@ -247,6 +247,35 @@ function inferCheckoutType(
   return 'manual_checkout';
 }
 
+function formatSessionDurationForReport(
+  checkInTime: string | Date,
+  checkOutTime?: string | Date | null
+): string {
+  if (!checkOutTime) {
+    return 'Pending';
+  }
+
+  const start = parseTimestamp(checkInTime).getTime();
+  const end = parseTimestamp(checkOutTime).getTime();
+  if (Number.isNaN(start) || Number.isNaN(end) || end < start) {
+    return 'Pending';
+  }
+
+  const totalMinutes = Math.floor((end - start) / 60000);
+  const hours = Math.floor(totalMinutes / 60);
+  const minutes = totalMinutes % 60;
+
+  if (hours === 0) {
+    return `${minutes}m`;
+  }
+
+  if (minutes === 0) {
+    return `${hours}h`;
+  }
+
+  return `${hours}h ${minutes}m`;
+}
+
 function isAttendanceExpired(checkInTime: string | Date, referenceTime: Date = new Date()): boolean {
   const deadline = getAutoCheckoutDeadline(checkInTime);
   return referenceTime.getTime() >= deadline.getTime();
@@ -2302,8 +2331,8 @@ export const adminApi = {
           .from('attendance')
           .select(`
             *,
-            employee:employees(id, first_name, last_name),
-            site:work_sites(id, name)
+            employee:employees(id, first_name, last_name, employee_id),
+            site:work_sites(id, name, address)
           `)
           .in('employee_id', employeeIds)
           .order('check_in_time', { ascending: false });
@@ -2344,9 +2373,29 @@ export const adminApi = {
             ? 'checked_out'
             : 'on_site';
 
+        const fullAddress =
+          row.site?.address ||
+          row.check_in_location_name ||
+          row.check_out_location_name ||
+          (row.is_remote_location ? 'Remote Work' : 'On-site attendance');
+        const latitude =
+          row.check_in_latitude != null
+            ? Number(row.check_in_latitude)
+            : row.check_out_latitude != null
+              ? Number(row.check_out_latitude)
+              : null;
+        const longitude =
+          row.check_in_longitude != null
+            ? Number(row.check_in_longitude)
+            : row.check_out_longitude != null
+              ? Number(row.check_out_longitude)
+              : null;
+
         return {
           attendance_id: row.id,
+          employee_record_id: row.employee_id,
           employee_name: employeeName,
+          employee_code: row.employee?.employee_id || String(row.employee_id || ''),
           date: row.check_in_time,
           check_in_time: row.check_in_time,
           check_out_time: row.check_out_time,
@@ -2363,6 +2412,11 @@ export const adminApi = {
             : 'Pending',
           checkout_type: row.check_out_time ? (checkoutType || 'manual_checkout') : 'pending',
           site_name: row.site?.name || 'Remote Work',
+          full_address: fullAddress,
+          latitude,
+          longitude,
+          is_remote_location: Boolean(row.is_remote_location),
+          session_duration: formatSessionDurationForReport(row.check_in_time, row.check_out_time),
           attendance_status: status,
         } as AttendanceReportRecord;
       });
