@@ -82,6 +82,7 @@ export interface LocationTracking {
   employee_id: number;
   latitude: string | number;
   longitude: string | number;
+  location_name?: string;
   timestamp: string;
   check_in_time?: string;
   is_on_site?: boolean;

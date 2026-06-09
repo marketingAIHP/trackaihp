@@ -1,5 +1,5 @@
 import React, { useState, useEffect } from 'react';
-import { View, StyleSheet, ScrollView, RefreshControl, Image, Platform, useWindowDimensions } from 'react-native';
+import { AppState, View, StyleSheet, ScrollView, RefreshControl, Image, Platform, useWindowDimensions } from 'react-native';
 import { Text, Card, Button, useTheme, Chip } from 'react-native-paper';
 import { SafeAreaView } from 'react-native-safe-area-context';
 import { useQuery } from '@tanstack/react-query';
@@ -103,13 +103,38 @@ export const EmployeeDashboardScreen: React.FC = () => {
     }, [primeLocation, refreshEmployeeAttendance])
   );
 
+  const refreshCheckedInLocation = React.useCallback(() => {
+    if (!currentAttendance) {
+      return;
+    }
+
+    void (async () => {
+      await primeLocation();
+      await LocationTrackingService.forceOneTimeUpdate();
+    })();
+  }, [currentAttendance, primeLocation]);
+
   useFocusEffect(
     React.useCallback(() => {
-      if (currentAttendance) {
-        void LocationTrackingService.forceOneTimeUpdate();
-      }
-    }, [currentAttendance])
+      refreshCheckedInLocation();
+    }, [refreshCheckedInLocation])
   );
+
+  useEffect(() => {
+    if (!currentAttendance) {
+      return;
+    }
+
+    const subscription = AppState.addEventListener('change', (nextState) => {
+      if (nextState === 'active') {
+        refreshCheckedInLocation();
+      }
+    });
+
+    return () => {
+      subscription.remove();
+    };
+  }, [currentAttendance, refreshCheckedInLocation]);
 
   useEffect(() => {
     if (!employeeId || attendanceLoading || currentAttendance) {

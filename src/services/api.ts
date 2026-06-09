@@ -281,6 +281,88 @@ function isAttendanceExpired(checkInTime: string | Date, referenceTime: Date = n
   return referenceTime.getTime() >= deadline.getTime();
 }
 
+type AutoCheckoutLocation = {
+  hasTrackedLocation: boolean;
+  latitude: number | null;
+  longitude: number | null;
+  locationName: string;
+  timestamp: string | null;
+};
+
+async function getAutoCheckoutLocation(employeeId?: number | null): Promise<AutoCheckoutLocation> {
+  if (!employeeId) {
+    return {
+      hasTrackedLocation: false,
+      latitude: null,
+      longitude: null,
+      locationName: 'Unknown (employee offline)',
+      timestamp: null,
+    };
+  }
+
+  let latestLocation: any = null;
+  let error: any = null;
+
+  const withLocationName = await db.location_tracking
+    .select('id, latitude, longitude, location_name, timestamp')
+    .eq('employee_id', employeeId)
+    .order('timestamp', { ascending: false })
+    .order('id', { ascending: false })
+    .limit(1)
+    .maybeSingle();
+
+  latestLocation = withLocationName.data;
+  error = withLocationName.error;
+
+  if (error?.message?.includes('location_name')) {
+    const fallback = await db.location_tracking
+      .select('id, latitude, longitude, timestamp')
+      .eq('employee_id', employeeId)
+      .order('timestamp', { ascending: false })
+      .order('id', { ascending: false })
+      .limit(1)
+      .maybeSingle();
+
+    latestLocation = fallback.data;
+    error = fallback.error;
+  }
+
+  if (error) {
+    logger.warn('Failed to load latest tracked location for auto-checkout:', {
+      employeeId,
+      error,
+    });
+    return {
+      hasTrackedLocation: false,
+      latitude: null,
+      longitude: null,
+      locationName: 'Unknown (employee offline)',
+      timestamp: null,
+    };
+  }
+
+  if (!latestLocation) {
+    return {
+      hasTrackedLocation: false,
+      latitude: null,
+      longitude: null,
+      locationName: 'Unknown (employee offline)',
+      timestamp: null,
+    };
+  }
+
+  return {
+    hasTrackedLocation: true,
+    latitude: latestLocation.latitude != null ? Number(latestLocation.latitude) : null,
+    longitude: latestLocation.longitude != null ? Number(latestLocation.longitude) : null,
+    locationName:
+      typeof latestLocation.location_name === 'string' && latestLocation.location_name.trim().length > 0
+        ? latestLocation.location_name.trim()
+        : 'Unknown location',
+    timestamp: latestLocation.timestamp || null,
+  };
+}
+
 async function expireAttendanceRecordIfNeeded(attendance: any, referenceTime: Date = new Date()): Promise<boolean> {
   if (!attendance?.id || attendance.check_out_time || !attendance.check_in_time) {
     return false;
@@ -291,17 +373,14 @@ async function expireAttendanceRecordIfNeeded(attendance: any, referenceTime: Da
     return false;
   }
 
-  const checkoutLatitude =
-    attendance.check_in_latitude != null ? Number(attendance.check_in_latitude) : null;
-  const checkoutLongitude =
-    attendance.check_in_longitude != null ? Number(attendance.check_in_longitude) : null;
+  const autoCheckoutLocation = await getAutoCheckoutLocation(attendance.employee_id);
 
   const { data: expiredAttendance, error } = await db.attendance
     .update({
       check_out_time: autoCheckoutAt.toISOString(),
-      check_out_latitude: checkoutLatitude,
-      check_out_longitude: checkoutLongitude,
-      check_out_location_name: attendance.check_in_location_name || 'Auto checkout',
+      check_out_latitude: autoCheckoutLocation.latitude,
+      check_out_longitude: autoCheckoutLocation.longitude,
+      check_out_location_name: autoCheckoutLocation.locationName,
       checkout_type: 'auto_checkout',
     })
     .eq('id', attendance.id)
@@ -2891,17 +2970,20 @@ export const employeeApi = {
           : (geofenceValidation.data?.site?.name || 'Work Site');
       }
 
+      const autoCheckoutLocation = useStoredLocationForLateAutoCheckout
+        ? await getAutoCheckoutLocation(employeeId)
+        : null;
       const checkOutLocationName = useStoredLocationForLateAutoCheckout
-        ? ((attendanceData as any)?.check_in_location_name || 'Auto checkout')
+        ? autoCheckoutLocation?.locationName || 'Unknown (employee offline)'
         : (validatedLocationName || location.locationName || await resolveLocationName(location));
 
       const baseUpdatePayload = {
         check_out_time: effectiveCheckOutAt.toISOString(),
         check_out_latitude: useStoredLocationForLateAutoCheckout
-          ? ((attendanceData as any)?.check_in_latitude ?? location.latitude)
+          ? (autoCheckoutLocation?.latitude ?? null)
           : location.latitude,
         check_out_longitude: useStoredLocationForLateAutoCheckout
-          ? ((attendanceData as any)?.check_in_longitude ?? location.longitude)
+          ? (autoCheckoutLocation?.longitude ?? null)
           : location.longitude,
       };
 
@@ -3310,27 +3392,51 @@ export const employeeApi = {
         is_on_site: isOnSite,
         timestamp: nextTimestamp,
       };
+      const locationName = await resolveLocationName(location);
+      const payloadWithLocationName = {
+        ...payload,
+        location_name: locationName,
+      };
 
-      logger.debug('[updateLiveLocation] Writing current live location:', JSON.stringify(payload));
+      logger.debug('[updateLiveLocation] Writing current live location:', JSON.stringify(payloadWithLocationName));
 
       let data: any = null;
       let error: any = null;
 
       if (latestRow) {
-        const response = await supabase
+        let response = await supabase
           .from('location_tracking')
-          .update(payload)
+          .update(payloadWithLocationName)
           .eq('id', latestRow.id)
           .select()
           .single();
+
+        if (response.error?.message?.includes('location_name')) {
+          response = await supabase
+            .from('location_tracking')
+            .update(payload)
+            .eq('id', latestRow.id)
+            .select()
+            .single();
+        }
+
         data = response.data;
         error = response.error;
       } else {
-        const response = await supabase
+        let response = await supabase
           .from('location_tracking')
-          .insert(payload)
+          .insert(payloadWithLocationName)
           .select()
           .single();
+
+        if (response.error?.message?.includes('location_name')) {
+          response = await supabase
+            .from('location_tracking')
+            .insert(payload)
+            .select()
+            .single();
+        }
+
         data = response.data;
         error = response.error;
       }
