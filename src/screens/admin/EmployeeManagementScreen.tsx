@@ -1,5 +1,5 @@
 import React, {useState} from 'react';
-import {View, StyleSheet, FlatList, RefreshControl} from 'react-native';
+import {View, StyleSheet, FlatList, RefreshControl, Platform} from 'react-native';
 import {Text, Card, FAB, Searchbar, useTheme} from 'react-native-paper';
 import {SafeAreaView} from 'react-native-safe-area-context';
 import {useQuery} from '@tanstack/react-query';
@@ -134,6 +134,14 @@ const styles = StyleSheet.create({
   },
   searchContainer: {
     padding: 16,
+    width: '100%',
+    ...(Platform.OS === 'web'
+      ? {
+          maxWidth: 1200,
+          alignSelf: 'center',
+          paddingHorizontal: 24,
+        }
+      : {}),
   },
   searchbar: {
     elevation: 2,
@@ -141,6 +149,14 @@ const styles = StyleSheet.create({
   listContent: {
     padding: 16,
     paddingBottom: 100, // Extra padding for FAB and tab bar
+    width: '100%',
+    ...(Platform.OS === 'web'
+      ? {
+          maxWidth: 1200,
+          alignSelf: 'center',
+          paddingHorizontal: 24,
+        }
+      : {}),
   },
   employeeCard: {
     marginBottom: 12,
