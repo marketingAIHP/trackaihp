@@ -344,11 +344,18 @@ export const AdminDashboardScreen: React.FC = () => {
               <Text variant="titleMedium" style={styles.sectionTitle}>
                 Quick Actions
               </Text>
-              <View style={styles.actionsGrid}>
+              <View
+                style={[
+                  styles.actionsGrid,
+                  isWeb && !isWideWeb && styles.webCompactActionsGrid,
+                ]}>
                 <Button
                   mode="contained"
                   onPress={() => navigation.navigate('CreateEmployee')}
-                  style={styles.actionButton}
+                  style={[
+                    styles.actionButton,
+                    isWeb && !isWideWeb && styles.webCompactActionButton,
+                  ]}
                   buttonColor={colors.deepBurgundy}
                   icon="account-plus">
                   Create Employee
@@ -356,7 +363,10 @@ export const AdminDashboardScreen: React.FC = () => {
                 <Button
                   mode="contained"
                   onPress={() => navigation.navigate('Reports')}
-                  style={styles.actionButton}
+                  style={[
+                    styles.actionButton,
+                    isWeb && !isWideWeb && styles.webCompactActionButton,
+                  ]}
                   buttonColor={colors.deepBurgundy}
                   icon="file-chart">
                   Reports
@@ -364,7 +374,10 @@ export const AdminDashboardScreen: React.FC = () => {
                 <Button
                   mode="contained"
                   onPress={() => navigation.navigate('CreateAdmin')}
-                  style={styles.actionButton}
+                  style={[
+                    styles.actionButton,
+                    isWeb && !isWideWeb && styles.webCompactActionButton,
+                  ]}
                   buttonColor={colors.deepBurgundy}
                   icon="shield-account">
                   Create Admin
@@ -372,7 +385,10 @@ export const AdminDashboardScreen: React.FC = () => {
                 <Button
                   mode="contained"
                   onPress={() => navigation.navigate('CreateArea')}
-                  style={styles.actionButton}
+                  style={[
+                    styles.actionButton,
+                    isWeb && !isWideWeb && styles.webCompactActionButton,
+                  ]}
                   buttonColor={colors.navyGrey}
                   icon="map-plus">
                   Add Area
@@ -775,9 +791,18 @@ const styles = StyleSheet.create({
     gap: 12,
     marginTop: 8,
   },
+  webCompactActionsGrid: {
+    flexDirection: 'row',
+    flexWrap: 'wrap',
+    justifyContent: 'space-between',
+  },
   actionButton: {
     marginBottom: 8,
     ...(Platform.OS === 'web' ? { cursor: 'pointer' } : {}),
+  },
+  webCompactActionButton: {
+    width: '48%',
+    marginBottom: 0,
   },
   areasCard: {
     marginBottom: 16,
