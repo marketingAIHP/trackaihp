@@ -1,5 +1,5 @@
 import React, {useState} from 'react';
-import {View, StyleSheet, FlatList, RefreshControl, Image} from 'react-native';
+import {View, StyleSheet, FlatList, RefreshControl, Image, Platform} from 'react-native';
 import {Text, Card, FAB, useTheme, Chip, Button, Searchbar} from 'react-native-paper';
 import {SafeAreaView} from 'react-native-safe-area-context';
 import {useQuery} from '@tanstack/react-query';
@@ -109,7 +109,10 @@ export const SiteManagementScreen: React.FC = () => {
         data={filteredSites || []}
         renderItem={renderSite}
         keyExtractor={(item) => item.id.toString()}
-        contentContainerStyle={styles.listContent}
+        contentContainerStyle={[
+          styles.listContent,
+          Platform.OS === 'web' && styles.webListInner,
+        ]}
         refreshControl={
           <RefreshControl refreshing={isRefetching} onRefresh={refetch} />
         }
@@ -142,6 +145,14 @@ const styles = StyleSheet.create({
   searchContainer: {
     padding: 16,
     paddingBottom: 8,
+    width: '100%',
+    ...(Platform.OS === 'web'
+      ? {
+          maxWidth: 1200,
+          alignSelf: 'center',
+          paddingHorizontal: 24,
+        }
+      : {}),
   },
   searchbar: {
     elevation: 2,
@@ -150,9 +161,24 @@ const styles = StyleSheet.create({
     paddingHorizontal: 16,
     paddingTop: 8,
     paddingBottom: 100, // Extra padding for FAB and tab bar
+    ...(Platform.OS === 'web'
+      ? {
+          paddingHorizontal: 24,
+        }
+      : {}),
+  },
+  webListInner: {
+    width: '100%',
+    maxWidth: 1200,
+    alignSelf: 'center',
   },
   siteCard: {
     marginBottom: 12,
+    ...(Platform.OS === 'web'
+      ? {
+          width: '100%',
+        }
+      : {}),
   },
   siteHeader: {
     flexDirection: 'row',
@@ -164,6 +190,11 @@ const styles = StyleSheet.create({
     height: 56,
     borderRadius: 8,
     backgroundColor: colors.almostWhite,
+    ...(Platform.OS === 'web'
+      ? {
+          objectFit: 'cover',
+        }
+      : {}),
   },
   siteImagePlaceholder: {
     width: 56,

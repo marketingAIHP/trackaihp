@@ -1,5 +1,5 @@
 import React, {useState, useEffect, useRef} from 'react';
-import {View, StyleSheet, ScrollView, Alert} from 'react-native';
+import {View, StyleSheet, ScrollView, Alert, Platform} from 'react-native';
 import {Text, Card, TextInput, Button, useTheme} from 'react-native-paper';
 import {SafeAreaView} from 'react-native-safe-area-context';
 import {useForm, Controller} from 'react-hook-form';
@@ -282,6 +282,7 @@ export const EditSiteScreen: React.FC = () => {
               onImageSelect={handleImageSelect}
               onImageRemove={handleImageRemove}
               uploading={uploadingImage}
+              webShape="square"
             />
 
             <View style={styles.locationRow}>
@@ -405,9 +406,21 @@ const styles = StyleSheet.create({
   scrollContent: {
     padding: 16,
     paddingBottom: 40,
+    ...(Platform.OS === 'web'
+      ? {
+          alignItems: 'center',
+          paddingHorizontal: 24,
+        }
+      : {}),
   },
   header: {
     marginBottom: 16,
+    width: '100%',
+    ...(Platform.OS === 'web'
+      ? {
+          maxWidth: 1120,
+        }
+      : {}),
   },
   title: {
     fontWeight: 'bold',
@@ -415,6 +428,13 @@ const styles = StyleSheet.create({
   },
   formCard: {
     marginBottom: 16,
+    width: '100%',
+    ...(Platform.OS === 'web'
+      ? {
+          maxWidth: 1120,
+          alignSelf: 'center',
+        }
+      : {}),
   },
   input: {
     marginBottom: 8,

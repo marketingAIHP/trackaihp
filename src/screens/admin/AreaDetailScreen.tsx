@@ -1,5 +1,5 @@
 import React from 'react';
-import {View, StyleSheet, ScrollView, RefreshControl, Pressable, Image} from 'react-native';
+import {View, StyleSheet, ScrollView, RefreshControl, Pressable, Image, Platform} from 'react-native';
 import {Text, Card, Button, useTheme, Chip, FAB} from 'react-native-paper';
 import {SafeAreaView} from 'react-native-safe-area-context';
 import {useQuery} from '@tanstack/react-query';
@@ -118,11 +118,11 @@ export const AreaDetailScreen: React.FC = () => {
                           {site.site_image ? (
                             <Image
                               source={{uri: site.site_image}}
-                              style={styles.siteImage}
+                              style={[styles.siteImage, Platform.OS === 'web' && styles.webSiteImage]}
                               resizeMode="cover"
                             />
                           ) : (
-                            <View style={styles.siteImagePlaceholder}>
+                            <View style={[styles.siteImagePlaceholder, Platform.OS === 'web' && styles.webSiteImage]}>
                               <Icon name="image-off" size={40} color={colors.coolGrey} />
                               <Text style={styles.noImageText}>No image</Text>
                             </View>
@@ -259,6 +259,14 @@ const styles = StyleSheet.create({
   header: {
     padding: 16,
     paddingBottom: 8,
+    width: '100%',
+    ...(Platform.OS === 'web'
+      ? {
+          maxWidth: 1200,
+          alignSelf: 'center',
+          paddingHorizontal: 24,
+        }
+      : {}),
   },
   headerTitle: {
     fontWeight: 'bold',
@@ -267,6 +275,14 @@ const styles = StyleSheet.create({
   content: {
     padding: 16,
     paddingTop: 8,
+    width: '100%',
+    ...(Platform.OS === 'web'
+      ? {
+          maxWidth: 1200,
+          alignSelf: 'center',
+          paddingHorizontal: 24,
+        }
+      : {}),
   },
   areaSection: {
     marginBottom: 24,
@@ -313,6 +329,11 @@ const styles = StyleSheet.create({
     width: '100%',
     height: 150,
     backgroundColor: colors.almostWhite,
+    ...(Platform.OS === 'web'
+      ? {
+          objectFit: 'cover',
+        }
+      : {}),
   },
   siteImagePlaceholder: {
     width: '100%',
@@ -320,6 +341,13 @@ const styles = StyleSheet.create({
     backgroundColor: colors.almostWhite,
     justifyContent: 'center',
     alignItems: 'center',
+  },
+  webSiteImage: {
+    maxWidth: 360,
+    width: '100%',
+    aspectRatio: 1,
+    height: undefined,
+    alignSelf: 'center',
   },
   noImageText: {
     marginTop: 8,

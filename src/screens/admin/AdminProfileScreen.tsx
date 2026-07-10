@@ -1,5 +1,5 @@
 import React from 'react';
-import {View, StyleSheet, ScrollView} from 'react-native';
+import {View, StyleSheet, ScrollView, Platform} from 'react-native';
 import {Text, Card, Button, useTheme} from 'react-native-paper';
 import {SafeAreaView} from 'react-native-safe-area-context';
 import {useQuery} from '@tanstack/react-query';
@@ -163,6 +163,14 @@ const styles = StyleSheet.create({
   },
   content: {
     padding: 16,
+    width: '100%',
+    ...(Platform.OS === 'web'
+      ? {
+          maxWidth: 1120,
+          alignSelf: 'center',
+          paddingHorizontal: 24,
+        }
+      : {}),
   },
   profileCard: {
     marginBottom: 16,

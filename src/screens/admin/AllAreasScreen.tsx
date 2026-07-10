@@ -1,5 +1,5 @@
 import React from 'react';
-import {View, StyleSheet, ScrollView, RefreshControl, Pressable} from 'react-native';
+import {View, StyleSheet, ScrollView, RefreshControl, Pressable, Platform} from 'react-native';
 import {Text, Card, useTheme, FAB} from 'react-native-paper';
 import {SafeAreaView} from 'react-native-safe-area-context';
 import {useQuery} from '@tanstack/react-query';
@@ -106,6 +106,14 @@ const styles = StyleSheet.create({
     flexGrow: 1,
     padding: 16,
     paddingBottom: 80,
+    width: '100%',
+    ...(Platform.OS === 'web'
+      ? {
+          maxWidth: 1200,
+          alignSelf: 'center',
+          paddingHorizontal: 24,
+        }
+      : {}),
   },
   listContainer: {
     gap: 12,

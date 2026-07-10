@@ -1,5 +1,5 @@
 import React, { useMemo, useState } from 'react';
-import { RefreshControl, ScrollView, StyleSheet, View } from 'react-native';
+import { Platform, RefreshControl, ScrollView, StyleSheet, View } from 'react-native';
 import { SafeAreaView } from 'react-native-safe-area-context';
 import { Button, Card, Chip, Menu, Searchbar, Text, useTheme } from 'react-native-paper';
 import { useQuery } from '@tanstack/react-query';
@@ -367,7 +367,18 @@ export const AttendanceLogsScreen: React.FC = () => {
 
 const styles = StyleSheet.create({
   container: { flex: 1 },
-  content: { padding: 16, paddingBottom: 32 },
+  content: {
+    padding: 16,
+    paddingBottom: 32,
+    width: '100%',
+    ...(Platform.OS === 'web'
+      ? {
+          maxWidth: 1200,
+          alignSelf: 'center',
+          paddingHorizontal: 24,
+        }
+      : {}),
+  },
   headerCard: { marginBottom: 16 },
   title: { fontWeight: '700', marginBottom: 6 },
   subtitle: { opacity: 0.7, marginBottom: 12 },

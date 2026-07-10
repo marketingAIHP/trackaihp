@@ -163,9 +163,21 @@ const styles = StyleSheet.create({
   scrollContent: {
     padding: 16,
     paddingBottom: 40,
+    ...(Platform.OS === 'web'
+      ? {
+          alignItems: 'center',
+          paddingHorizontal: 24,
+        }
+      : {}),
   },
   header: {
     marginBottom: 16,
+    width: '100%',
+    ...(Platform.OS === 'web'
+      ? {
+          maxWidth: 1120,
+        }
+      : {}),
   },
   title: {
     fontWeight: 'bold',
@@ -173,6 +185,13 @@ const styles = StyleSheet.create({
   },
   formCard: {
     marginBottom: 16,
+    width: '100%',
+    ...(Platform.OS === 'web'
+      ? {
+          maxWidth: 1120,
+          alignSelf: 'center',
+        }
+      : {}),
   },
   input: {
     marginBottom: 8,

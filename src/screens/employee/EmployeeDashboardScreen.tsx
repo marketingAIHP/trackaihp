@@ -528,6 +528,11 @@ const styles = StyleSheet.create({
     borderRadius: 8,
     backgroundColor: colors.almostWhite,
     flexShrink: 0,
+    ...(Platform.OS === 'web'
+      ? {
+          objectFit: 'cover',
+        }
+      : {}),
   },
   siteImagePlaceholder: {
     width: 80,
@@ -547,8 +552,12 @@ const styles = StyleSheet.create({
     alignItems: 'stretch',
   },
   webSiteImage: {
-    width: 140,
-    height: 140,
+    width: '100%',
+    maxWidth: 220,
+    aspectRatio: 4 / 3,
+    height: undefined,
+    alignSelf: 'center',
+    objectFit: 'cover',
   },
   webSiteDetails: {
     alignItems: 'flex-start',

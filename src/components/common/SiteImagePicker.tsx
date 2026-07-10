@@ -1,5 +1,5 @@
 import React, {useState} from 'react';
-import {View, StyleSheet, Image, TouchableOpacity, Alert} from 'react-native';
+import {View, StyleSheet, Image, TouchableOpacity, Alert, Platform} from 'react-native';
 import {Text, Button, useTheme, ActivityIndicator} from 'react-native-paper';
 import {MaterialCommunityIcons as Icon} from '@expo/vector-icons';
 import {pickImage} from '../../utils/imagePicker';
@@ -10,6 +10,7 @@ interface SiteImagePickerProps {
   onImageSelect: (uri: string | null) => void;
   onImageRemove?: () => void;
   uploading?: boolean;
+  webShape?: 'landscape' | 'square';
 }
 
 export const SiteImagePicker: React.FC<SiteImagePickerProps> = ({
@@ -17,6 +18,7 @@ export const SiteImagePicker: React.FC<SiteImagePickerProps> = ({
   onImageSelect,
   onImageRemove,
   uploading = false,
+  webShape = 'landscape',
 }) => {
   const theme = useTheme();
   const [picking, setPicking] = useState(false);
@@ -65,8 +67,20 @@ export const SiteImagePicker: React.FC<SiteImagePickerProps> = ({
       </Text>
       
       {imageUri ? (
-        <View style={styles.imageContainer}>
-          <Image source={{uri: imageUri}} style={styles.image} />
+        <View
+          style={[
+            styles.imageContainer,
+            Platform.OS === 'web' && styles.webImageContainer,
+            Platform.OS === 'web' && webShape === 'square' && styles.webSquareImageContainer,
+          ]}>
+          <Image
+            source={{uri: imageUri}}
+            style={[
+              styles.image,
+              Platform.OS === 'web' && styles.webImage,
+              Platform.OS === 'web' && webShape === 'square' && styles.webSquareImage,
+            ]}
+          />
           {uploading && (
             <View style={styles.uploadingOverlay}>
               <ActivityIndicator size="large" color={colors.pureWhite} />
@@ -98,7 +112,12 @@ export const SiteImagePicker: React.FC<SiteImagePickerProps> = ({
         </View>
       ) : (
         <TouchableOpacity
-          style={[styles.placeholder, {borderColor: theme.colors.outline}]}
+          style={[
+            styles.placeholder,
+            Platform.OS === 'web' && styles.webPlaceholder,
+            Platform.OS === 'web' && webShape === 'square' && styles.webSquarePlaceholder,
+            {borderColor: theme.colors.outline},
+          ]}
           onPress={handlePickImage}
           disabled={uploading || picking}>
           {picking ? (
@@ -139,6 +158,28 @@ const styles = StyleSheet.create({
     width: '100%',
     height: 200,
     resizeMode: 'cover',
+    ...(Platform.OS === 'web'
+      ? {
+          objectFit: 'cover',
+        }
+      : {}),
+  },
+  webImageContainer: {
+    maxWidth: 720,
+    alignSelf: 'center',
+    width: '100%',
+  },
+  webSquareImageContainer: {
+    maxWidth: 360,
+  },
+  webImage: {
+    aspectRatio: 16 / 9,
+    height: undefined,
+    maxHeight: 360,
+  },
+  webSquareImage: {
+    aspectRatio: 1,
+    maxHeight: undefined,
   },
   uploadingOverlay: {
     position: 'absolute',
@@ -176,6 +217,18 @@ const styles = StyleSheet.create({
     justifyContent: 'center',
     alignItems: 'center',
     backgroundColor: colors.almostWhite,
+  },
+  webPlaceholder: {
+    maxWidth: 720,
+    alignSelf: 'center',
+    aspectRatio: 16 / 9,
+    height: undefined,
+    maxHeight: 360,
+  },
+  webSquarePlaceholder: {
+    maxWidth: 360,
+    aspectRatio: 1,
+    maxHeight: undefined,
   },
   placeholderText: {
     marginTop: 12,

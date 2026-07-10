@@ -1,5 +1,5 @@
 import React, {useState} from 'react';
-import {View, StyleSheet, Image, TouchableOpacity, Alert} from 'react-native';
+import {View, StyleSheet, Image, TouchableOpacity, Alert, Platform} from 'react-native';
 import {Text, Button, useTheme, ActivityIndicator} from 'react-native-paper';
 import {MaterialCommunityIcons as Icon} from '@expo/vector-icons';
 import {pickImage} from '../../utils/imagePicker';
@@ -149,6 +149,11 @@ const styles = StyleSheet.create({
   image: {
     borderRadius: 999,
     resizeMode: 'cover',
+    ...(Platform.OS === 'web'
+      ? {
+          objectFit: 'cover',
+        }
+      : {}),
   },
   uploadingOverlay: {
     position: 'absolute',

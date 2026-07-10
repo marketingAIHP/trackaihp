@@ -138,6 +138,11 @@ const tabStyles = StyleSheet.create({
   },
   profileImage: {
     backgroundColor: colors.almostWhite,
+    ...(Platform.OS === 'web'
+      ? {
+          objectFit: 'cover',
+        }
+      : {}),
   },
 });
 
