@@ -242,8 +242,17 @@ export const AdminDashboardScreen: React.FC = () => {
     <Pressable
       onPress={onPress}
       disabled={!onPress}
-      style={isWeb && onPress ? styles.webPressable : undefined}>
-      <Card style={[styles.statCard, isWideWeb && styles.webStatCard, onPress && styles.statCardClickable]}>
+      style={[
+        isWeb && onPress ? styles.webPressable : undefined,
+        isWeb && !isWideWeb && styles.webCompactStatPressable,
+      ]}>
+      <Card
+        style={[
+          styles.statCard,
+          isWideWeb && styles.webStatCard,
+          isWeb && !isWideWeb && styles.webCompactStatCard,
+          onPress && styles.statCardClickable,
+        ]}>
         <Card.Content>
           <View style={styles.statContent}>
             <View style={[styles.iconContainer, { backgroundColor: `${color}20` }]}>
@@ -746,8 +755,17 @@ const styles = StyleSheet.create({
     cursor: 'pointer',
     flexBasis: '48.5%',
   },
+  webCompactStatPressable: {
+    width: '48%',
+    flexBasis: '48%',
+  },
   statCardClickable: {
     opacity: 1,
+  },
+  webCompactStatCard: {
+    minWidth: 0,
+    width: '100%',
+    marginBottom: 0,
   },
   statContent: {
     flexDirection: 'row',
