@@ -154,7 +154,7 @@ export const AdminDashboardScreen: React.FC = () => {
       .channel(`dashboard-realtime:${adminId}`)
       // Listen for new notifications
       .on('postgres_changes',
-        { event: 'INSERT', schema: 'public', table: 'notifications', filter: `admin_id=eq.${adminId}` },
+        { event: 'INSERT', schema: 'public', table: 'notifications' },
         () => {
           refetchUnreadCount();
         }

@@ -23,8 +23,7 @@ export function useNotificationListener() {
                 {
                     event: 'INSERT',
                     schema: 'public',
-                    table: 'notifications',
-                    filter: `admin_id=eq.${adminId}`
+                    table: 'notifications'
                 },
                 async (payload) => {
                     const newNotif = payload.new;

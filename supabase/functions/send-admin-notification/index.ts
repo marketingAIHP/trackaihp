@@ -94,9 +94,7 @@ serve(async (req: Request) => {
       .eq('auth_user_id', user.id)
       .maybeSingle();
 
-    const allowed =
-      requesterAdmin?.id === adminId ||
-      requesterEmployee?.admin_id === adminId;
+    const allowed = Boolean(requesterAdmin?.id || requesterEmployee?.id);
 
     if (!allowed) {
       console.error('[send-admin-notification] Requester is not allowed to send for admin', {
@@ -106,13 +104,13 @@ serve(async (req: Request) => {
         requesterEmployeeId: requesterEmployee?.id ?? null,
         requesterEmployeeAdminId: requesterEmployee?.admin_id ?? null,
       });
-      return json({ success: false, error: 'You are not allowed to send notifications for this admin.' }, 403);
+      return json({ success: false, error: 'Only authenticated admins or employees can send admin notifications.' }, 403);
     }
 
     const { data: tokenRows, error: tokenError } = await adminClient
       .from('notification_tokens')
       .select('id, token')
-      .eq('admin_id', adminId)
+      .not('admin_id', 'is', null)
       .eq('is_active', true);
 
     if (tokenError) {

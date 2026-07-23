@@ -43,7 +43,7 @@ export const NotificationsScreen: React.FC = () => {
     const channel = supabase
       .channel(`notifications-screen:${adminId}`)
       .on('postgres_changes',
-        { event: 'INSERT', schema: 'public', table: 'notifications', filter: `admin_id=eq.${adminId}` },
+        { event: 'INSERT', schema: 'public', table: 'notifications' },
         () => {
           refetch();
           queryClient.invalidateQueries({queryKey: ['admin', 'notifications', 'unread', adminId]});

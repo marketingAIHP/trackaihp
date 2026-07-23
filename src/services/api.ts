@@ -476,10 +476,10 @@ async function findExistingNotification(
   notificationData: AdminNotificationInput
 ): Promise<Notification | null> {
   try {
+    void adminId;
     let query = supabase
       .from('notifications')
       .select('*')
-      .eq('admin_id', adminId)
       .eq('type', notificationData.type)
       .order('created_at', { ascending: false })
       .limit(1);
@@ -600,7 +600,6 @@ async function getEmployeeEligibleSites(employeeId: number): Promise<ApiResponse
 
   const { data: sites, error: siteError } = await db.work_sites
     .select('id, name, address, latitude, longitude, geofence_radius, admin_id, is_active')
-    .eq('admin_id', employee.admin_id)
     .eq('is_active', true)
     .order('id', { ascending: true });
 
@@ -1029,6 +1028,7 @@ export const adminApi = {
   // OPTIMIZATION: Reduced to 3 parallel queries (was 5)
   async getDashboardStats(adminId: number): Promise<ApiResponse<DashboardStats>> {
     try {
+      void adminId;
       if (!isSupabaseConfigured) {
         return { success: false, error: 'Supabase is not configured' };
       }
@@ -1039,16 +1039,13 @@ export const adminApi = {
         // OPTIMIZATION: Single query to get both total and active counts
         // Using raw SQL would be better but this is close enough
         db.employees
-          .select('id, is_active')
-          .eq('admin_id', adminId),
+          .select('id, is_active'),
         // Get site count
         db.work_sites
-          .select('id', { count: 'exact', head: true })
-          .eq('admin_id', adminId),
+          .select('id', { count: 'exact', head: true }),
         // Get employee IDs for on-site count
         db.employees
-          .select('id')
-          .eq('admin_id', adminId),
+          .select('id'),
       ]);
 
       // Calculate employee counts from single result
@@ -1093,13 +1090,13 @@ export const adminApi = {
   // Get employees
   async getEmployees(adminId: number): Promise<ApiResponse<Employee[]>> {
     try {
+      void adminId;
       if (!isSupabaseConfigured) {
         return { success: false, error: 'Supabase is not configured' };
       }
 
       const { data, error } = await db.employees
         .select('*, site:work_sites(*), department:departments(*)')
-        .eq('admin_id', adminId)
         .order('created_at', { ascending: false });
 
       if (error) {
@@ -1137,13 +1134,13 @@ export const adminApi = {
   // Get areas
   async getAreas(adminId: number): Promise<ApiResponse<Area[]>> {
     try {
+      void adminId;
       if (!isSupabaseConfigured) {
         return { success: false, error: 'Supabase is not configured' };
       }
 
       const { data, error } = await db.areas
         .select('*')
-        .eq('admin_id', adminId)
         .eq('is_active', true)
         .order('created_at', { ascending: false });
 
@@ -1160,13 +1157,13 @@ export const adminApi = {
   // Get sites
   async getSites(adminId: number, activeOnly: boolean = false): Promise<ApiResponse<WorkSite[]>> {
     try {
+      void adminId;
       if (!isSupabaseConfigured) {
         return { success: false, error: 'Supabase is not configured' };
       }
 
       let query = db.work_sites
-        .select('*, area:areas(*)')
-        .eq('admin_id', adminId);
+        .select('*, area:areas(*)');
 
       if (activeOnly) {
         query = query.eq('is_active', true);
@@ -1186,6 +1183,7 @@ export const adminApi = {
 
   async getSiteAttendanceSummary(adminId: number, siteId: number): Promise<ApiResponse<SiteAttendanceSummary>> {
     try {
+      void adminId;
       if (!isSupabaseConfigured) {
         return { success: false, error: 'Supabase is not configured' };
       }
@@ -1193,7 +1191,6 @@ export const adminApi = {
       const { data: site, error: siteError } = await db.work_sites
         .select('*, area:areas(*)')
         .eq('id', siteId)
-        .eq('admin_id', adminId)
         .single();
 
       if (siteError || !site) {
@@ -1202,7 +1199,6 @@ export const adminApi = {
 
       const { data: assignedEmployees, error: employeeError } = await db.employees
         .select('*, site:work_sites(*)')
-        .eq('admin_id', adminId)
         .eq('site_id', siteId)
         .eq('is_active', true)
         .order('first_name', { ascending: true });
@@ -1255,6 +1251,7 @@ export const adminApi = {
   // OPTIMIZATION: Reduced to 2 queries, removed dynamic imports inside loop
   async getEmployeeLocations(adminId: number): Promise<ApiResponse<LocationTracking[]>> {
     try {
+      void adminId;
       if (!isSupabaseConfigured) {
         return { success: false, error: 'Supabase is not configured' };
       }
@@ -1298,18 +1295,13 @@ export const adminApi = {
         return { success: true, data: [] };
       }
 
-      // Filter to only this admin's employees
-      const adminEmployees = freshAttendance.filter((att: any) =>
-        att.employee && att.employee.admin_id === adminId
-      );
-
-      if (adminEmployees.length === 0) {
+      if (freshAttendance.length === 0) {
         return { success: true, data: [] };
       }
 
       // Get employee IDs for live location lookup
-      const employeeIds = [...new Set(adminEmployees.map((att: any) => att.employee_id))];
-      const earliestActiveCheckIn = adminEmployees.reduce<string | null>((earliest, attendance: any) => {
+      const employeeIds = [...new Set(freshAttendance.map((att: any) => att.employee_id))];
+      const earliestActiveCheckIn = freshAttendance.reduce<string | null>((earliest, attendance: any) => {
         const checkIn = attendance.check_in_time;
         if (!checkIn) return earliest;
         if (!earliest) return checkIn;
@@ -1354,7 +1346,7 @@ export const adminApi = {
       const locations: LocationTracking[] = [];
       const seenEmployeeIds = new Set<number>();
 
-      for (const attendance of adminEmployees) {
+      for (const attendance of freshAttendance) {
         const employee = (attendance as any).employee;
 
         // Skip if already processed this employee
@@ -1618,11 +1610,10 @@ export const adminApi = {
       const { data: existingSite } = await db.work_sites
         .select('id')
         .eq('id', siteId)
-        .eq('admin_id', adminId)
         .single();
 
       if (!existingSite) {
-        return { success: false, error: 'Site not found or access denied' };
+        return { success: false, error: 'Site not found' };
       }
 
       const updateData: any = {};
@@ -1641,15 +1632,14 @@ export const adminApi = {
       // The admin_id should remain the same as the existing site
       // Note: We don't include admin_id in updateData to prevent changing it
 
-      // First verify the site exists and belongs to this admin
+      // First verify the site exists
       const verifyResponse = await db.work_sites
         .select('id, admin_id')
         .eq('id', siteId)
-        .eq('admin_id', adminId)
         .single();
 
       if (!verifyResponse.data) {
-        return { success: false, error: 'Site not found or access denied' };
+        return { success: false, error: 'Site not found' };
       }
 
       // Ensure updateData is not empty
@@ -1706,19 +1696,19 @@ export const adminApi = {
     profile_image?: string;
   }): Promise<ApiResponse<Employee>> {
     try {
+      void adminId;
       if (!isSupabaseConfigured) {
         return { success: false, error: 'Supabase is not configured' };
       }
 
-      // Verify employee belongs to admin and get current profile image
+      // Verify employee exists and get current profile image
       const { data: existingEmployee } = await db.employees
         .select('id, email, profile_image')
         .eq('id', employeeId)
-        .eq('admin_id', adminId)
         .single();
 
       if (!existingEmployee) {
-        return { success: false, error: 'Employee not found or access denied' };
+        return { success: false, error: 'Employee not found' };
       }
 
       // Delete old profile image if updating or removing
@@ -1918,14 +1908,14 @@ export const adminApi = {
   // Get employees currently on-site (checked in)
   async getOnSiteEmployees(adminId: number): Promise<ApiResponse<Attendance[]>> {
     try {
+      void adminId;
       if (!isSupabaseConfigured) {
         return { success: false, error: 'Supabase is not configured' };
       }
 
-      // First get all employees for this admin
+      // First get all employees in the organization
       const { data: employees } = await db.employees
-        .select('id')
-        .eq('admin_id', adminId);
+        .select('id');
 
       const employeeIds = employees?.map(emp => emp.id) || [];
 
@@ -1965,6 +1955,7 @@ export const adminApi = {
   // Get employees not at their checked-in site (alert) - outside geofence boundary
   async getEmployeesNotAtSite(adminId: number): Promise<ApiResponse<Attendance[]>> {
     try {
+      void adminId;
       if (!isSupabaseConfigured) {
         return { success: false, error: 'Supabase is not configured' };
       }
@@ -1972,10 +1963,9 @@ export const adminApi = {
       // Import geofence utility
       const { checkGeofence } = require('../utils/geofence');
 
-      // First get all employees for this admin
+      // First get all employees in the organization
       const { data: employees } = await db.employees
-        .select('id, site_id, remote_work, site:work_sites(*)')
-        .eq('admin_id', adminId);
+        .select('id, site_id, remote_work, site:work_sites(*)');
 
       const employeeIds = employees?.map(emp => emp.id) || [];
 
@@ -2047,12 +2037,9 @@ export const adminApi = {
   // Get notifications
   async getNotifications(adminId: number): Promise<ApiResponse<Notification[]>> {
     try {
+      void adminId;
       if (!isSupabaseConfigured) {
         return { success: false, error: 'Supabase is not configured' };
-      }
-
-      if (!adminId || adminId === 0) {
-        return { success: false, error: 'Invalid admin ID' };
       }
 
       // First, delete notifications older than 1 day (silently fail if error)
@@ -2064,7 +2051,6 @@ export const adminApi = {
         await supabase
           .from('notifications')
           .delete()
-          .eq('admin_id', adminId)
           .lt('created_at', oneDayAgoISO);
       } catch (deleteError) {
         // Ignore delete errors, continue to fetch
@@ -2074,7 +2060,6 @@ export const adminApi = {
       const { data, error } = await supabase
         .from('notifications')
         .select('*')
-        .eq('admin_id', adminId)
         .order('created_at', { ascending: false })
         .limit(100);
 
@@ -2138,12 +2123,9 @@ export const adminApi = {
   // Get unread notification count
   async getUnreadNotificationCount(adminId: number): Promise<ApiResponse<number>> {
     try {
+      void adminId;
       if (!isSupabaseConfigured) {
         return { success: false, error: 'Supabase is not configured' };
-      }
-
-      if (!adminId || adminId === 0) {
-        return { success: false, error: 'Invalid admin ID' };
       }
 
       // First, delete notifications older than 1 day (silently fail if error)
@@ -2155,7 +2137,6 @@ export const adminApi = {
         await supabase
           .from('notifications')
           .delete()
-          .eq('admin_id', adminId)
           .lt('created_at', oneDayAgoISO);
       } catch (deleteError) {
         // Ignore delete errors, continue to count
@@ -2169,7 +2150,6 @@ export const adminApi = {
       const { count, error } = await supabase
         .from('notifications')
         .select('*', { count: 'exact', head: true })
-        .eq('admin_id', adminId)
         .eq('is_read', false)
         .gte('created_at', oneDayAgoISO); // Only count notifications from last 24 hours
 
@@ -2186,19 +2166,15 @@ export const adminApi = {
   // Mark all notifications as read
   async markAllNotificationsAsRead(adminId: number): Promise<ApiResponse<void>> {
     try {
+      void adminId;
       if (!isSupabaseConfigured) {
         return { success: false, error: 'Supabase is not configured' };
-      }
-
-      if (!adminId || adminId === 0) {
-        return { success: false, error: 'Invalid admin ID' };
       }
 
       // Use direct supabase client to ensure proper RLS handling
       const { error } = await supabase
         .from('notifications')
         .update({ is_read: true })
-        .eq('admin_id', adminId)
         .eq('is_read', false);
 
       if (error) {
@@ -2214,13 +2190,13 @@ export const adminApi = {
   // Delete all read notifications
   async deleteReadNotifications(adminId: number): Promise<ApiResponse<void>> {
     try {
+      void adminId;
       if (!isSupabaseConfigured) {
         return { success: false, error: 'Supabase is not configured' };
       }
 
       const { error } = await db.notifications
         .delete()
-        .eq('admin_id', adminId)
         .eq('is_read', true);
 
       if (error) {
@@ -2294,14 +2270,14 @@ export const adminApi = {
   // Get recent activity (check-ins and check-outs from last 24 hours)
   async getRecentActivity(adminId: number): Promise<ApiResponse<RecentActivity[]>> {
     try {
+      void adminId;
       if (!isSupabaseConfigured) {
         return { success: false, error: 'Supabase is not configured' };
       }
 
-      // Get all employees for this admin
+      // Get all employees in the organization
       const employeesResult = await db.employees
-        .select('id')
-        .eq('admin_id', adminId);
+        .select('id');
 
       if (!employeesResult.data || employeesResult.data.length === 0) {
         return { success: true, data: [] };
@@ -2386,6 +2362,7 @@ export const adminApi = {
     filters: AttendanceReportFilters = {}
   ): Promise<ApiResponse<AttendanceReportRecord[]>> {
     try {
+      void adminId;
       const formatLocationLabel = (fallback = 'Unnamed Location') => fallback;
 
       if (!isSupabaseConfigured) {
@@ -2393,8 +2370,7 @@ export const adminApi = {
       }
 
       const { data: employees, error: employeeError } = await db.employees
-        .select('id, first_name, last_name, admin_id')
-        .eq('admin_id', adminId);
+        .select('id, first_name, last_name, admin_id');
 
       if (employeeError) {
         return { success: false, error: employeeError.message || 'Failed to load employees' };
@@ -2513,14 +2489,14 @@ export const adminApi = {
   // Check for geofence violations and create notifications
   async checkGeofenceViolations(adminId: number): Promise<ApiResponse<void>> {
     try {
+      void adminId;
       if (!isSupabaseConfigured) {
         return { success: false, error: 'Supabase is not configured' };
       }
 
-      // Get all employees currently checked in for this admin
+      // Get all employees currently checked in across the organization
       const { data: employees } = await db.employees
         .select('id, first_name, last_name, admin_id, site_id, remote_work, site:work_sites(*)')
-        .eq('admin_id', adminId)
         .eq('is_active', true);
 
       if (!employees || employees.length === 0) {
@@ -2573,7 +2549,6 @@ export const adminApi = {
           // Check if notification already exists for this violation (last 30 minutes)
           const { data: existingNotifications } = await db.notifications
             .select('id')
-            .eq('admin_id', adminId)
             .eq('type', 'alert')
             .eq('metadata->>attendance_id', attendance.id.toString())
             .gte('created_at', new Date(Date.now() - 30 * 60 * 1000).toISOString())
@@ -2630,13 +2605,13 @@ export const employeeApi = {
 
   async getAvailableWorkSites(adminId: number): Promise<ApiResponse<WorkSite[]>> {
     try {
+      void adminId;
       if (!isSupabaseConfigured) {
         return { success: false, error: 'Supabase is not configured' };
       }
 
       const { data, error } = await db.work_sites
         .select('id, name, address, latitude, longitude, geofence_radius, admin_id, is_active')
-        .eq('admin_id', adminId)
         .eq('is_active', true)
         .order('id', { ascending: true });
 
@@ -3361,7 +3336,6 @@ export const employeeApi = {
         const thirtyMinutesAgo = new Date(Date.now() - 30 * 60 * 1000).toISOString();
         const { data: existingExitAlerts } = await db.notifications
           .select('id')
-          .eq('admin_id', employee.admin_id)
           .eq('type', 'alert')
           .eq('metadata->>attendance_id', String(currentAttendance.data.id))
           .eq('metadata->>event', 'geofence_exit')
