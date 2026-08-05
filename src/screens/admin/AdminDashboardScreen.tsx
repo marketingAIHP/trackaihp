@@ -166,6 +166,16 @@ export const AdminDashboardScreen: React.FC = () => {
           refreshDashboardAttendance();
         }
       )
+      // Location updates drive only the Outside Boundary card. Keep all other
+      // dashboard queries and statistics untouched.
+      .on('postgres_changes',
+        { event: '*', schema: 'public', table: 'location_tracking' },
+        () => {
+          void queryClient.invalidateQueries({
+            queryKey: ['admin', 'employeesNotAtSite', adminId],
+          });
+        }
+      )
       .subscribe();
 
     return () => {

@@ -21,7 +21,6 @@ Notifications.setNotificationHandler({
 const IST_TIME_ZONE = 'Asia/Kolkata';
 const FULL_DAY_AUTO_CHECKOUT_MS = 9 * 60 * 60 * 1000;
 const ATTENDANCE_NOTIFICATION_SCOPE = 'attendance';
-const AUTO_CHECKOUT_WARNING_MINUTES = 15;
 const ATTENDANCE_REMINDER_MINUTES = 60;
 const AUTH_STORAGE_KEY = '@auth_token';
 
@@ -368,7 +367,6 @@ export async function handleCheckInNotificationSuccess(siteName?: string, checkI
 
         const deadline = getAutoCheckoutDeadline(checkInTime);
         const reminderAt = new Date(deadline.getTime() - ATTENDANCE_REMINDER_MINUTES * 60 * 1000);
-        const warningAt = new Date(deadline.getTime() - AUTO_CHECKOUT_WARNING_MINUTES * 60 * 1000);
 
         await scheduleNotificationAt(
             reminderAt,
@@ -381,16 +379,6 @@ export async function handleCheckInNotificationSuccess(siteName?: string, checkI
             }
         );
 
-        await scheduleNotificationAt(
-            warningAt,
-            'Auto checkout warning',
-            'You will be auto checked out in 15 minutes if you do not check out manually.',
-            {
-                type: 'alert',
-                notificationScope: ATTENDANCE_NOTIFICATION_SCOPE,
-                notificationKind: 'auto_checkout_warning',
-            }
-        );
     } catch (error) {
         logger.warn('[NotificationService] Failed to schedule check-in notifications:', error);
     }

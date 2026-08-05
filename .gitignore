@@ -83,6 +83,10 @@ sql.md
 !supabase/migrations/20260604_add_push_notification_delivery.sql
 !supabase/migrations/20260605_add_notification_delivery_logs_and_daily_reminders.sql
 !supabase/migrations/20260606_improve_daily_reminder_audit_logging.sql
+!supabase/migrations/20260804_fix_gagan_auto_checkout_push.sql
+!supabase/migrations/202608040001_fix_notification_delivery_pipeline.sql
+!supabase/migrations/202608040002_fix_notification_deadline_type_compatibility.sql
+!supabase/migrations/202608050001_fix_future_auto_checkout_timestamp_storage.sql
 !EAS_DEPLOYMENT.md
 
 # Testing

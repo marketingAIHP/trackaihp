@@ -23,12 +23,14 @@ import {
 } from '../../utils/geofence';
 import { formatDistance } from '../../utils/format';
 import LocationTrackingService from '../../services/LocationTrackingService';
+import { logger } from '../../utils/logger';
 
 const IST_TIME_ZONE = 'Asia/Kolkata';
 const HALF_DAY_SECONDS = 4.5 * 60 * 60;
 const FULL_DAY_SECONDS = 9 * 60 * 60;
 const OVERTIME_SECONDS = 2 * 60 * 60;
 const ATTENDANCE_LOCATION_CACHE_MAX_AGE_MS = 45000;
+const GAGAN_JHA_EMPLOYEE_ID = 34;
 
 function parseTime(value?: string | null): number | null {
   if (!value) return null;
@@ -216,6 +218,7 @@ export const CheckInOutScreen: React.FC = () => {
   });
 
   const profile = profileQuery.data;
+  const isGaganJha = employeeId === GAGAN_JHA_EMPLOYEE_ID;
 
   const workSitesQuery = useQuery({
     queryKey: ['employee', 'work-sites', profile?.admin_id],
@@ -274,6 +277,16 @@ export const CheckInOutScreen: React.FC = () => {
       return 'Loading nearby work sites...';
     }
 
+    // Gagan's detected-site label must represent his current GPS match, not the
+    // site captured on the active attendance record when he originally checked in.
+    if (isGaganJha) {
+      return nearbySite
+        ? nearbySite.site.name
+        : hasNearbyWorkSite
+          ? 'No nearby work site detected'
+          : 'No active work sites available';
+    }
+
     if (currentAttendance?.site?.name) {
       return currentAttendance.site.name;
     }
@@ -287,6 +300,7 @@ export const CheckInOutScreen: React.FC = () => {
     currentAttendance?.check_in_location_name,
     currentAttendance?.site?.name,
     hasNearbyWorkSite,
+    isGaganJha,
     nearbySite,
     profile?.remote_work,
     workSitesQuery.isLoading,
@@ -367,16 +381,38 @@ export const CheckInOutScreen: React.FC = () => {
   const refreshLocation = useCallback(async () => {
     setIsRefreshingLocation(true);
     try {
-      await refreshCachedLocation({
+      const cachedSnapshot = getCachedLocationSnapshot();
+      const refreshedSnapshot = await refreshCachedLocation({
+        preferCached: !isGaganJha,
         targetAccuracy: ATTENDANCE_GPS_ACCURACY_THRESHOLD,
         timeoutMs: 5000,
         retryCount: 1,
         allowStaleFallback: false,
       });
+
+      if (isGaganJha) {
+        const calculatedSite = refreshedSnapshot
+          ? findNearestSiteWithinGeofence(refreshedSnapshot.coordinates, availableWorkSites)
+          : null;
+        logger.error('[GaganLocationAudit] Refresh result', {
+          currentLatitude: refreshedSnapshot?.coordinates.latitude ?? null,
+          currentLongitude: refreshedSnapshot?.coordinates.longitude ?? null,
+          gpsAccuracy: refreshedSnapshot?.accuracy ?? null,
+          cachedCoordinates: cachedSnapshot?.coordinates ?? null,
+          nearestCalculatedSite: calculatedSite?.site.name ?? null,
+          displayedSite: calculatedSite?.site.name ?? 'No nearby work site detected',
+        });
+      }
     } finally {
       setIsRefreshingLocation(false);
     }
-  }, [refreshCachedLocation]);
+  }, [
+    availableWorkSites,
+    currentAttendance?.site?.name,
+    getCachedLocationSnapshot,
+    isGaganJha,
+    refreshCachedLocation,
+  ]);
 
   const getDetectedSiteForSnapshot = useCallback((snapshot: LocationSnapshot) => {
     if (profile?.remote_work) {

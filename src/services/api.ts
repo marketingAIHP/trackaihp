@@ -1988,7 +1988,32 @@ export const adminApi = {
 
       const freshCheckIns = await filterActiveAttendances(allCheckIns || []);
 
-      // Filter employees who are checked in but outside their detected work site's geofence
+      // Outside Boundary must use the same current state written by the
+      // geofence-alert path, rather than the immutable check-in coordinates.
+      const checkedInEmployeeIds = [...new Set(
+        freshCheckIns.map((attendance: any) => attendance.employee_id)
+      )];
+      const latestLocationByEmployee = new Map<number, any>();
+
+      if (checkedInEmployeeIds.length > 0) {
+        const { data: currentLocations, error: locationError } = await db.location_tracking
+          .select('id, employee_id, latitude, longitude, is_on_site, timestamp')
+          .in('employee_id', checkedInEmployeeIds)
+          .order('timestamp', { ascending: false })
+          .order('id', { ascending: false });
+
+        if (locationError) {
+          return { success: false, error: locationError.message || 'Failed to load current locations' };
+        }
+
+        for (const location of currentLocations || []) {
+          if (!latestLocationByEmployee.has(location.employee_id)) {
+            latestLocationByEmployee.set(location.employee_id, location);
+          }
+        }
+      }
+
+      // Filter checked-in employees using their latest live geofence state.
       // DEDUPLICATE by employee_id - only keep the most recent check-in per employee
       const notAtSite: any[] = [];
       const seenEmployeeIds = new Set<number>();
@@ -2011,20 +2036,31 @@ export const adminApi = {
         // Skip if employee has no valid work site
         if (!monitoredSite) continue;
 
-        // Skip if no check-in location
-        if (!attendance.check_in_latitude || !attendance.check_in_longitude) continue;
+        const candidateLocation = latestLocationByEmployee.get(attendance.employee_id);
+        const currentLocation = candidateLocation &&
+          parseTimestamp(candidateLocation.timestamp).getTime() >=
+            parseTimestamp(attendance.check_in_time).getTime()
+          ? candidateLocation
+          : null;
 
-        // Check if check-in location is outside geofence
-        const checkInLocation = {
-          latitude: attendance.check_in_latitude,
-          longitude: attendance.check_in_longitude,
-        };
+        const latitude = currentLocation?.latitude ?? attendance.check_in_latitude;
+        const longitude = currentLocation?.longitude ?? attendance.check_in_longitude;
+        if (!latitude || !longitude) continue;
 
-        const geofenceStatus = checkGeofence(checkInLocation, monitoredSite);
+        const isOnSite = typeof currentLocation?.is_on_site === 'boolean'
+          ? currentLocation.is_on_site
+          : checkGeofence(
+              { latitude: Number(latitude), longitude: Number(longitude) },
+              monitoredSite
+            ).isWithinGeofence;
 
         // Add to alert if outside geofence
-        if (!geofenceStatus.isWithinGeofence) {
-          notAtSite.push(attendance);
+        if (!isOnSite) {
+          notAtSite.push({
+            ...attendance,
+            check_in_latitude: Number(latitude),
+            check_in_longitude: Number(longitude),
+          });
         }
       }
 
