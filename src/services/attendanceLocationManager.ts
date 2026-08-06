@@ -43,6 +43,7 @@ export interface LocationManagerState {
 
 export interface LocationManagerRequestOptions extends PlatformLocationOptions {
   allowStaleFallback?: boolean;
+  forceFresh?: boolean;
 }
 
 export interface LocationManagerCachedSnapshotOptions {
@@ -538,6 +539,10 @@ const attendanceLocationManager = {
     silent = false
   ): Promise<LocationSnapshot | null> {
     if (locationRequestPromise) {
+      if (options?.forceFresh) {
+        await locationRequestPromise;
+        return this.refreshLocation(options, silent);
+      }
       return locationRequestPromise;
     }
 
@@ -549,6 +554,7 @@ const attendanceLocationManager = {
       retryCount: options?.retryCount ?? DEFAULT_RETRY_COUNT,
       retryDelayMs: options?.retryDelayMs ?? DEFAULT_RETRY_DELAY_MS,
       allowStaleFallback: options?.allowStaleFallback ?? true,
+      forceFresh: options?.forceFresh ?? false,
     };
 
     locationRequestPromise = (async () => {
@@ -605,15 +611,17 @@ const attendanceLocationManager = {
           }
         }
 
-        const watchSnapshot = await waitForMatchingWatchSnapshot(
-          requestOptions.targetAccuracy ?? ATTENDANCE_GPS_ACCURACY_THRESHOLD,
-          Math.min(
-            requestOptions.timeoutMs ?? DEFAULT_TIMEOUT_MS,
-            DEFAULT_WATCH_WARMUP_TIMEOUT_MS
-          )
-        );
-        if (watchSnapshot) {
-          return watchSnapshot;
+        if (!requestOptions.forceFresh) {
+          const watchSnapshot = await waitForMatchingWatchSnapshot(
+            requestOptions.targetAccuracy ?? ATTENDANCE_GPS_ACCURACY_THRESHOLD,
+            Math.min(
+              requestOptions.timeoutMs ?? DEFAULT_TIMEOUT_MS,
+              DEFAULT_WATCH_WARMUP_TIMEOUT_MS
+            )
+          );
+          if (watchSnapshot) {
+            return watchSnapshot;
+          }
         }
 
         const location = await getPlatformCurrentLocation(requestOptions);
