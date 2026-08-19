@@ -3296,6 +3296,8 @@ export const employeeApi = {
       skipReverseGeocoding?: boolean;
       backgroundDiagnostics?: boolean;
       databaseClient?: any;
+      skipAttendanceLookup?: boolean;
+      trackingAttendanceId?: number;
     }
   ): Promise<ApiResponse<LocationTracking>> {
     try {
@@ -3305,36 +3307,40 @@ export const employeeApi = {
 
       // Check if employee has an active check-in
       // OPTIMIZATION: In the future, we could skip this for background updates if we trust the client
-      if (options?.backgroundDiagnostics) {
-        console.log('[ContinuousLocation] attendance lookup started');
-      }
-      const currentAttendance = await this.getCurrentAttendance(employeeId, options?.databaseClient);
-      if (options?.backgroundDiagnostics) {
-        console.log('[ContinuousLocation] attendance lookup completed', {
-          success: currentAttendance.success,
-          hasActiveAttendance: Boolean(currentAttendance.data),
-        });
-      }
-      if (!currentAttendance.success) {
+      let activeAttendance: Attendance | null = null;
+      if (!options?.skipAttendanceLookup) {
         if (options?.backgroundDiagnostics) {
-          console.warn('[ContinuousLocation] location upload failed', {
-            stage: 'attendance_lookup',
+          console.log('[ContinuousLocation] attendance lookup started');
+        }
+        const currentAttendance = await this.getCurrentAttendance(employeeId, options?.databaseClient);
+        if (options?.backgroundDiagnostics) {
+          console.log('[ContinuousLocation] attendance lookup completed', {
+            success: currentAttendance.success,
+            hasActiveAttendance: Boolean(currentAttendance.data),
+          });
+        }
+        if (!currentAttendance.success) {
+          if (options?.backgroundDiagnostics) {
+            console.warn('[ContinuousLocation] location upload failed', {
+              stage: 'attendance_lookup',
+              error: currentAttendance.error || 'Unable to verify active attendance',
+            });
+          }
+          return {
+            success: false,
             error: currentAttendance.error || 'Unable to verify active attendance',
-          });
+          };
         }
-        return {
-          success: false,
-          error: currentAttendance.error || 'Unable to verify active attendance',
-        };
-      }
 
-      if (!currentAttendance.data) {
-        if (options?.backgroundDiagnostics) {
-          console.log('[ContinuousLocation] location upload skipped', {
-            reason: 'Not currently checked in',
-          });
+        if (!currentAttendance.data) {
+          if (options?.backgroundDiagnostics) {
+            console.log('[ContinuousLocation] location upload skipped', {
+              reason: 'Not currently checked in',
+            });
+          }
+          return { success: false, error: 'Not currently checked in' };
         }
-        return { success: false, error: 'Not currently checked in' };
+        activeAttendance = currentAttendance.data;
       }
 
       // Use provided timestamp or current time
@@ -3342,7 +3348,7 @@ export const employeeApi = {
 
       // Determine if employee is on-site
       let isOnSite = false;
-      const activeSiteId = siteId || currentAttendance.data.site_id;
+      const activeSiteId = siteId || activeAttendance?.site_id;
       let activeSite: any = null;
 
       if (activeSiteId) {
@@ -3415,8 +3421,9 @@ export const employeeApi = {
         activeSite &&
         latestRow?.is_on_site &&
         !isOnSite &&
-        currentAttendance.data.id
+        (activeAttendance?.id || options?.trackingAttendanceId)
       ) {
+        const attendanceId = activeAttendance?.id || options?.trackingAttendanceId;
         const distance = checkGeofence(location, activeSite as WorkSite).distance;
         const thirtyMinutesAgo = new Date(Date.now() - 30 * 60 * 1000).toISOString();
         const notificationQuery = options?.databaseClient
@@ -3425,7 +3432,7 @@ export const employeeApi = {
         const { data: existingExitAlerts } = await notificationQuery
           .select('id')
           .eq('type', 'alert')
-          .eq('metadata->>attendance_id', String(currentAttendance.data.id))
+          .eq('metadata->>attendance_id', String(attendanceId))
           .eq('metadata->>event', 'geofence_exit')
           .gte('created_at', thirtyMinutesAgo)
           .limit(1);
@@ -3438,7 +3445,7 @@ export const employeeApi = {
             metadata: {
               event: 'geofence_exit',
               employee_id: employeeId,
-              attendance_id: currentAttendance.data.id,
+              attendance_id: attendanceId,
               site_id: activeSite.id,
               distance: Math.round(distance),
               exited_at: recordTimestamp,

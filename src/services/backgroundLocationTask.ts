@@ -109,9 +109,22 @@ TaskManager.defineTask(BACKGROUND_LOCATION_TASK, async ({ data, error }) => {
 
         // 3. Attempt Send
         if (shouldSend) {
-            const employeeId = await AsyncStorage.getItem(CONTINUOUS_LOCATION_STORAGE_KEYS.employeeId);
+            const [isTracking, employeeId] = await Promise.all([
+                AsyncStorage.getItem(CONTINUOUS_LOCATION_STORAGE_KEYS.isTracking),
+                AsyncStorage.getItem(CONTINUOUS_LOCATION_STORAGE_KEYS.employeeId),
+            ]);
+            if (isTracking !== 'true' || !employeeId) {
+                console.log('[ContinuousLocation] location upload skipped', {
+                    reason: 'Tracking context is missing',
+                });
+                return;
+            }
+
             if (employeeId) {
                 const siteId = await AsyncStorage.getItem(CONTINUOUS_LOCATION_STORAGE_KEYS.siteId);
+                const attendanceId = await AsyncStorage.getItem(
+                    CONTINUOUS_LOCATION_STORAGE_KEYS.attendanceId
+                );
                 const timestampIso = new Date(gpsTimestamp).toISOString();
 
                 console.log('[ContinuousLocation] background location received', {
@@ -131,6 +144,10 @@ TaskManager.defineTask(BACKGROUND_LOCATION_TASK, async ({ data, error }) => {
                             skipReverseGeocoding: true,
                             backgroundDiagnostics: true,
                             databaseClient: headlessSupabase,
+                            skipAttendanceLookup: true,
+                            trackingAttendanceId: attendanceId
+                                ? parseInt(attendanceId, 10)
+                                : undefined,
                         }
                     )
                 );
@@ -154,6 +171,7 @@ TaskManager.defineTask(BACKGROUND_LOCATION_TASK, async ({ data, error }) => {
                         await AsyncStorage.multiRemove([
                             CONTINUOUS_LOCATION_STORAGE_KEYS.isTracking,
                             CONTINUOUS_LOCATION_STORAGE_KEYS.employeeId,
+                            CONTINUOUS_LOCATION_STORAGE_KEYS.attendanceId,
                             CONTINUOUS_LOCATION_STORAGE_KEYS.siteId,
                         ]).catch(() => undefined);
                     }

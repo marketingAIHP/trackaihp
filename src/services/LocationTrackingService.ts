@@ -28,6 +28,7 @@ const LOCATION_CACHE_MAX_AGE_MS = 45000;
 const STORAGE_KEYS = {
   IS_TRACKING: CONTINUOUS_LOCATION_STORAGE_KEYS.isTracking,
   EMPLOYEE_ID: CONTINUOUS_LOCATION_STORAGE_KEYS.employeeId,
+  ATTENDANCE_ID: CONTINUOUS_LOCATION_STORAGE_KEYS.attendanceId,
   SITE_ID: CONTINUOUS_LOCATION_STORAGE_KEYS.siteId,
   LAST_SENT_TS: CONTINUOUS_LOCATION_STORAGE_KEYS.lastSentTimestamp,
   LAST_SENT_LAT: CONTINUOUS_LOCATION_STORAGE_KEYS.lastSentLatitude,
@@ -314,7 +315,8 @@ const LocationTrackingService = {
   async checkInEmployee(
     employeeId: number,
     siteId?: number,
-    initialLocation?: Coordinates
+    initialLocation?: Coordinates,
+    attendanceId?: number
   ): Promise<{ success: boolean; error?: string }> {
     if (isStartingTracking) {
       await log('⚠️ checkInEmployee called while already starting — ignored');
@@ -335,6 +337,10 @@ const LocationTrackingService = {
 
       await AsyncStorage.setItem(STORAGE_KEYS.EMPLOYEE_ID, employeeId.toString());
       await AsyncStorage.setItem(STORAGE_KEYS.IS_TRACKING, 'true');
+
+      if (attendanceId) {
+        await AsyncStorage.setItem(STORAGE_KEYS.ATTENDANCE_ID, attendanceId.toString());
+      }
 
       if (siteId) {
         await AsyncStorage.setItem(STORAGE_KEYS.SITE_ID, siteId.toString());
@@ -376,6 +382,7 @@ const LocationTrackingService = {
     await AsyncStorage.multiRemove([
       STORAGE_KEYS.IS_TRACKING,
       STORAGE_KEYS.EMPLOYEE_ID,
+      STORAGE_KEYS.ATTENDANCE_ID,
       STORAGE_KEYS.SITE_ID,
       STORAGE_KEYS.LAST_SENT_TS,
       STORAGE_KEYS.LAST_SENT_LAT,
@@ -425,7 +432,7 @@ const LocationTrackingService = {
       const siteId = siteIdStr ? parseInt(siteIdStr, 10) : undefined;
 
       await log(`task restart attempt for employee=${employeeId}`);
-      await this.checkInEmployee(employeeId, siteId);
+      await this.checkInEmployee(employeeId, siteId, undefined, attendanceResult.data.id);
     } catch (error: any) {
       await log(`❌ Resume failed: ${error?.message || 'Unknown error'}`);
     }

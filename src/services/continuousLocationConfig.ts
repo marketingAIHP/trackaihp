@@ -11,6 +11,7 @@ export const CONTINUOUS_LOCATION_INTERVALS = {
 export const CONTINUOUS_LOCATION_STORAGE_KEYS = {
   isTracking: '@LocSvc:isTracking',
   employeeId: '@LocSvc:employeeId',
+  attendanceId: '@LocSvc:attendanceId',
   siteId: '@LocSvc:siteId',
   lastSentTimestamp: '@LocSvc:lastSentTs',
   lastSentLatitude: '@LocSvc:lastSentLat',
