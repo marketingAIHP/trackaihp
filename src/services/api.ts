@@ -2768,7 +2768,7 @@ export const employeeApi = {
 
   // Get current attendance (active check-in)
   // AUTO-CHECKOUT: Open attendance ends at the earlier of 9 hours or IST midnight
-  async getCurrentAttendance(employeeId: number): Promise<ApiResponse<Attendance | null>> {
+  async getCurrentAttendance(employeeId: number, databaseClient?: any): Promise<ApiResponse<Attendance | null>> {
     try {
       if (!isSupabaseConfigured) {
         return { success: false, error: 'Supabase is not configured' };
@@ -2776,7 +2776,10 @@ export const employeeApi = {
 
       const now = new Date();
 
-      const { data: activeAttendance, error } = await db.attendance
+      const attendanceQuery = databaseClient
+        ? databaseClient.from('attendance')
+        : db.attendance;
+      const { data: activeAttendance, error } = await attendanceQuery
         .select('*, site:work_sites(*)')
         .eq('employee_id', employeeId)
         .is('check_out_time', null)
@@ -3289,7 +3292,11 @@ export const employeeApi = {
     location: Coordinates,
     siteId?: number,
     timestamp?: string,
-    options?: { skipReverseGeocoding?: boolean; backgroundDiagnostics?: boolean }
+    options?: {
+      skipReverseGeocoding?: boolean;
+      backgroundDiagnostics?: boolean;
+      databaseClient?: any;
+    }
   ): Promise<ApiResponse<LocationTracking>> {
     try {
       if (!isSupabaseConfigured) {
@@ -3301,7 +3308,7 @@ export const employeeApi = {
       if (options?.backgroundDiagnostics) {
         console.log('[ContinuousLocation] attendance lookup started');
       }
-      const currentAttendance = await this.getCurrentAttendance(employeeId);
+      const currentAttendance = await this.getCurrentAttendance(employeeId, options?.databaseClient);
       if (options?.backgroundDiagnostics) {
         console.log('[ContinuousLocation] attendance lookup completed', {
           success: currentAttendance.success,
@@ -3340,7 +3347,10 @@ export const employeeApi = {
 
       if (activeSiteId) {
         // Get site for geofence check
-        const { data: site } = await db.work_sites
+        const siteQuery = options?.databaseClient
+          ? options.databaseClient.from('work_sites')
+          : db.work_sites;
+        const { data: site } = await siteQuery
           .select('id, name, latitude, longitude, geofence_radius')
           .eq('id', activeSiteId)
           .single();
@@ -3357,7 +3367,10 @@ export const employeeApi = {
       // Treat location_tracking as "current live state" for each employee.
       // This prevents old buffered background updates from overwriting the latest
       // location when Android flushes them later.
-      const { data: existingRows, error: existingError } = await db.location_tracking
+      const locationTrackingQuery = options?.databaseClient
+        ? options.databaseClient.from('location_tracking')
+        : db.location_tracking;
+      const { data: existingRows, error: existingError } = await locationTrackingQuery
         .select('id, employee_id, latitude, longitude, is_on_site, timestamp')
         .eq('employee_id', employeeId)
         .order('timestamp', { ascending: false })
@@ -3386,7 +3399,10 @@ export const employeeApi = {
         return { success: true, data: latestRow as LocationTracking };
       }
 
-      const employeeDetails = await db.employees
+      const employeeQuery = options?.databaseClient
+        ? options.databaseClient.from('employees')
+        : db.employees;
+      const employeeDetails = await employeeQuery
         .select('id, first_name, last_name, admin_id, remote_work')
         .eq('id', employeeId)
         .single();
@@ -3403,7 +3419,10 @@ export const employeeApi = {
       ) {
         const distance = checkGeofence(location, activeSite as WorkSite).distance;
         const thirtyMinutesAgo = new Date(Date.now() - 30 * 60 * 1000).toISOString();
-        const { data: existingExitAlerts } = await db.notifications
+        const notificationQuery = options?.databaseClient
+          ? options.databaseClient.from('notifications')
+          : db.notifications;
+        const { data: existingExitAlerts } = await notificationQuery
           .select('id')
           .eq('type', 'alert')
           .eq('metadata->>attendance_id', String(currentAttendance.data.id))
@@ -3448,7 +3467,8 @@ export const employeeApi = {
       let error: any = null;
 
       if (latestRow) {
-        let response = await supabase
+        const writeClient = options?.databaseClient || supabase;
+        let response = await writeClient
           .from('location_tracking')
           .update(payloadWithLocationName)
           .eq('id', latestRow.id)
@@ -3456,7 +3476,7 @@ export const employeeApi = {
           .single();
 
         if (response.error?.message?.includes('location_name')) {
-          response = await supabase
+          response = await writeClient
             .from('location_tracking')
             .update(payload)
             .eq('id', latestRow.id)
@@ -3467,14 +3487,15 @@ export const employeeApi = {
         data = response.data;
         error = response.error;
       } else {
-        let response = await supabase
+        const writeClient = options?.databaseClient || supabase;
+        let response = await writeClient
           .from('location_tracking')
           .insert(payloadWithLocationName)
           .select()
           .single();
 
         if (response.error?.message?.includes('location_name')) {
-          response = await supabase
+          response = await writeClient
             .from('location_tracking')
             .insert(payload)
             .select()
@@ -3518,7 +3539,8 @@ export const employeeApi = {
 
       // Best-effort cleanup of duplicate rows left by the old tracking architecture.
       if (existingRows && existingRows.length > 1 && data?.id) {
-        void supabase
+        const cleanupClient = options?.databaseClient || supabase;
+        void cleanupClient
           .from('location_tracking')
           .delete()
           .eq('employee_id', employeeId)

@@ -8,6 +8,7 @@ import AsyncStorage from '@react-native-async-storage/async-storage';
 
 const url = safeEnv.supabaseUrl;
 const key = safeEnv.supabaseAnonKey;
+const AUTH_STORAGE_KEY = '@auth_token';
 
 // OPTIMIZATION: Create a SINGLE Supabase client instance with optimized settings
 // - Reduced timeout to 15s to fail fast and release connections
@@ -75,6 +76,47 @@ export const supabase = createClient(url, key, {
     },
   },
 });
+
+/**
+ * Creates a request-scoped client for Android headless tasks.
+ * It uses the access token already persisted at login and deliberately avoids
+ * the shared auth client's session lock/refresh lifecycle.
+ */
+export async function createHeadlessSupabaseClient() {
+  const projectRef = url.match(/^https?:\/\/([^.]+)/)?.[1];
+  const persistedSession = projectRef
+    ? await AsyncStorage.getItem(`sb-${projectRef}-auth-token`)
+    : null;
+  let accessToken: string | null = null;
+
+  if (persistedSession) {
+    try {
+      accessToken = JSON.parse(persistedSession)?.access_token || null;
+    } catch {
+      accessToken = null;
+    }
+  }
+
+  accessToken ||= await AsyncStorage.getItem(AUTH_STORAGE_KEY);
+  if (!accessToken) {
+    throw new Error('Authenticated session is unavailable for background upload');
+  }
+
+  return createClient(url, key, {
+    auth: {
+      autoRefreshToken: false,
+      persistSession: false,
+      detectSessionInUrl: false,
+    },
+    global: {
+      headers: {
+        apikey: key,
+        Authorization: `Bearer ${accessToken}`,
+      },
+    },
+    db: { schema: 'public' },
+  });
+}
 
 // Export configuration status and URL for debugging
 export const isSupabaseConfigured: boolean = env.isSupabaseConfigured;

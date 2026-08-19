@@ -15,6 +15,7 @@ import * as Location from 'expo-location';
 import { updateLocation, getLastSentTimestamp, getLastSentCoords, markLocationSent } from './locationState';
 import { calculateDistance } from '../utils/geofence';
 import { employeeApi } from './api';
+import { createHeadlessSupabaseClient } from './supabase';
 import AsyncStorage from '@react-native-async-storage/async-storage';
 import {
     CONTINUOUS_LOCATION_INTERVALS,
@@ -118,6 +119,7 @@ TaskManager.defineTask(BACKGROUND_LOCATION_TASK, async ({ data, error }) => {
                     accuracy: coords.accuracy ?? null,
                 });
                 console.log('[ContinuousLocation] updateLiveLocation started');
+                const headlessSupabase = await createHeadlessSupabaseClient();
 
                 const response = await withBackgroundUploadTimeout(
                     employeeApi.updateLiveLocation(
@@ -125,7 +127,11 @@ TaskManager.defineTask(BACKGROUND_LOCATION_TASK, async ({ data, error }) => {
                         { latitude: coords.latitude, longitude: coords.longitude },
                         siteId ? parseInt(siteId, 10) : undefined,
                         timestampIso,
-                        { skipReverseGeocoding: true, backgroundDiagnostics: true }
+                        {
+                            skipReverseGeocoding: true,
+                            backgroundDiagnostics: true,
+                            databaseClient: headlessSupabase,
+                        }
                     )
                 );
 
