@@ -13,6 +13,7 @@ export const CONTINUOUS_LOCATION_STORAGE_KEYS = {
   employeeId: '@LocSvc:employeeId',
   attendanceId: '@LocSvc:attendanceId',
   siteId: '@LocSvc:siteId',
+  siteContext: '@LocSvc:siteContext',
   lastSentTimestamp: '@LocSvc:lastSentTs',
   lastSentLatitude: '@LocSvc:lastSentLat',
   lastSentLongitude: '@LocSvc:lastSentLng',

@@ -8,7 +8,7 @@
 import AsyncStorage from '@react-native-async-storage/async-storage';
 import * as Location from 'expo-location';
 import * as TaskManager from 'expo-task-manager';
-import type { Coordinates } from '../types';
+import type { Coordinates, WorkSite } from '../types';
 import { isGpsAccurateEnough } from '../utils/geofence';
 import { logger } from '../utils/logger';
 import { employeeApi } from './api';
@@ -30,6 +30,7 @@ const STORAGE_KEYS = {
   EMPLOYEE_ID: CONTINUOUS_LOCATION_STORAGE_KEYS.employeeId,
   ATTENDANCE_ID: CONTINUOUS_LOCATION_STORAGE_KEYS.attendanceId,
   SITE_ID: CONTINUOUS_LOCATION_STORAGE_KEYS.siteId,
+  SITE_CONTEXT: CONTINUOUS_LOCATION_STORAGE_KEYS.siteContext,
   LAST_SENT_TS: CONTINUOUS_LOCATION_STORAGE_KEYS.lastSentTimestamp,
   LAST_SENT_LAT: CONTINUOUS_LOCATION_STORAGE_KEYS.lastSentLatitude,
   LAST_SENT_LNG: CONTINUOUS_LOCATION_STORAGE_KEYS.lastSentLongitude,
@@ -316,7 +317,8 @@ const LocationTrackingService = {
     employeeId: number,
     siteId?: number,
     initialLocation?: Coordinates,
-    attendanceId?: number
+    attendanceId?: number,
+    siteContext?: WorkSite
   ): Promise<{ success: boolean; error?: string }> {
     if (isStartingTracking) {
       await log('⚠️ checkInEmployee called while already starting — ignored');
@@ -346,6 +348,12 @@ const LocationTrackingService = {
         await AsyncStorage.setItem(STORAGE_KEYS.SITE_ID, siteId.toString());
       } else {
         await AsyncStorage.removeItem(STORAGE_KEYS.SITE_ID);
+      }
+
+      if (siteContext) {
+        await AsyncStorage.setItem(STORAGE_KEYS.SITE_CONTEXT, JSON.stringify(siteContext));
+      } else {
+        await AsyncStorage.removeItem(STORAGE_KEYS.SITE_CONTEXT);
       }
 
       if (initialLocation) {
@@ -384,6 +392,7 @@ const LocationTrackingService = {
       STORAGE_KEYS.EMPLOYEE_ID,
       STORAGE_KEYS.ATTENDANCE_ID,
       STORAGE_KEYS.SITE_ID,
+      STORAGE_KEYS.SITE_CONTEXT,
       STORAGE_KEYS.LAST_SENT_TS,
       STORAGE_KEYS.LAST_SENT_LAT,
       STORAGE_KEYS.LAST_SENT_LNG,
@@ -432,7 +441,13 @@ const LocationTrackingService = {
       const siteId = siteIdStr ? parseInt(siteIdStr, 10) : undefined;
 
       await log(`task restart attempt for employee=${employeeId}`);
-      await this.checkInEmployee(employeeId, siteId, undefined, attendanceResult.data.id);
+      await this.checkInEmployee(
+        employeeId,
+        siteId,
+        undefined,
+        attendanceResult.data.id,
+        attendanceResult.data.site
+      );
     } catch (error: any) {
       await log(`❌ Resume failed: ${error?.message || 'Unknown error'}`);
     }

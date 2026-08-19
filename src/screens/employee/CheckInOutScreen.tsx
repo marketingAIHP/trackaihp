@@ -460,7 +460,8 @@ export const CheckInOutScreen: React.FC = () => {
           latitude: attendance.check_in_latitude ?? payload.snapshot.coordinates.latitude,
           longitude: attendance.check_in_longitude ?? payload.snapshot.coordinates.longitude,
         },
-        attendance.id
+        attendance.id,
+        payload.detectedSite?.site
       );
       if (!trackingResult.success) {
         Alert.alert('Tracking Error', trackingResult.error || 'Failed to start live tracking');

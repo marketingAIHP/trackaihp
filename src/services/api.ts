@@ -3282,6 +3282,68 @@ export const employeeApi = {
   // LIVE LOCATION TRACKING
   // ==========================================================================
 
+  async updateBackgroundLiveLocation(
+    employeeId: number,
+    location: Coordinates,
+    isOnSite: boolean | undefined,
+    timestamp: string,
+    databaseClient: any
+  ): Promise<ApiResponse<LocationTracking>> {
+    try {
+      console.log('[ContinuousLocation] preparing background location payload');
+      const payload = {
+        employee_id: employeeId,
+        latitude: location.latitude,
+        longitude: location.longitude,
+        timestamp,
+        ...(typeof isOnSite === 'boolean' ? { is_on_site: isOnSite } : {}),
+      };
+
+      console.log('[ContinuousLocation] location upload started');
+      const updateResult = await databaseClient
+        .from('location_tracking')
+        .update(payload)
+        .eq('employee_id', employeeId)
+        .select('id, employee_id, latitude, longitude, is_on_site, timestamp, location_name');
+
+      if (updateResult.error) {
+        console.warn('[ContinuousLocation] location upload failed', {
+          error: updateResult.error.message || 'Failed to update location',
+        });
+        return { success: false, error: updateResult.error.message || 'Failed to update location' };
+      }
+
+      let result = updateResult.data?.[0] || null;
+      if (!result) {
+        if (typeof isOnSite !== 'boolean') {
+          const message = 'Stored site context is unavailable for initial location row';
+          console.warn('[ContinuousLocation] location upload failed', { error: message });
+          return { success: false, error: message };
+        }
+        const insertResult = await databaseClient
+          .from('location_tracking')
+          .insert(payload)
+          .select('id, employee_id, latitude, longitude, is_on_site, timestamp, location_name')
+          .single();
+
+        if (insertResult.error || !insertResult.data) {
+          const message = insertResult.error?.message || 'Failed to insert location';
+          console.warn('[ContinuousLocation] location upload failed', { error: message });
+          return { success: false, error: message };
+        }
+        result = insertResult.data;
+      }
+
+      console.log('[ContinuousLocation] location upload succeeded', { timestamp: result.timestamp });
+      return { success: true, data: result as LocationTracking };
+    } catch (error: any) {
+      console.warn('[ContinuousLocation] location upload failed', {
+        error: error?.message || 'Failed to update background location',
+      });
+      return { success: false, error: error?.message || 'Failed to update background location' };
+    }
+  },
+
   /**
    * Update employee's live location while checked in.
    * This inserts/updates a record in the location_tracking table.

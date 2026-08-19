@@ -13,7 +13,8 @@
 import * as TaskManager from 'expo-task-manager';
 import * as Location from 'expo-location';
 import { updateLocation, getLastSentTimestamp, getLastSentCoords, markLocationSent } from './locationState';
-import { calculateDistance } from '../utils/geofence';
+import { calculateDistance, checkGeofence } from '../utils/geofence';
+import type { WorkSite } from '../types';
 import { employeeApi } from './api';
 import { createHeadlessSupabaseClient } from './supabase';
 import AsyncStorage from '@react-native-async-storage/async-storage';
@@ -48,6 +49,7 @@ async function withBackgroundUploadTimeout<T>(operation: Promise<T>): Promise<T>
 
 // Task name - must match startLocationUpdatesAsync
 export const BACKGROUND_LOCATION_TASK = CONTINUOUS_LOCATION_TASK;
+let isBackgroundUploadInFlight = false;
 
 /**
  * Background Location Task (GPS COLLECTION ONLY)
@@ -109,6 +111,13 @@ TaskManager.defineTask(BACKGROUND_LOCATION_TASK, async ({ data, error }) => {
 
         // 3. Attempt Send
         if (shouldSend) {
+            if (isBackgroundUploadInFlight) {
+                console.log('[ContinuousLocation] location upload skipped', {
+                    reason: 'Previous background upload is still active',
+                });
+                return;
+            }
+
             const [isTracking, employeeId] = await Promise.all([
                 AsyncStorage.getItem(CONTINUOUS_LOCATION_STORAGE_KEYS.isTracking),
                 AsyncStorage.getItem(CONTINUOUS_LOCATION_STORAGE_KEYS.employeeId),
@@ -121,11 +130,25 @@ TaskManager.defineTask(BACKGROUND_LOCATION_TASK, async ({ data, error }) => {
             }
 
             if (employeeId) {
-                const siteId = await AsyncStorage.getItem(CONTINUOUS_LOCATION_STORAGE_KEYS.siteId);
-                const attendanceId = await AsyncStorage.getItem(
-                    CONTINUOUS_LOCATION_STORAGE_KEYS.attendanceId
+                const siteContextJson = await AsyncStorage.getItem(
+                    CONTINUOUS_LOCATION_STORAGE_KEYS.siteContext
                 );
                 const timestampIso = new Date(gpsTimestamp).toISOString();
+                let isOnSite: boolean | undefined;
+
+                if (siteContextJson) {
+                    try {
+                        const siteContext = JSON.parse(siteContextJson) as WorkSite;
+                        isOnSite = checkGeofence(
+                            { latitude: coords.latitude, longitude: coords.longitude },
+                            siteContext
+                        ).isWithinGeofence;
+                    } catch {
+                        console.warn('[ContinuousLocation] optional metadata lookup failed', {
+                            reason: 'Stored site context is invalid',
+                        });
+                    }
+                }
 
                 console.log('[ContinuousLocation] background location received', {
                     timestamp: timestampIso,
@@ -134,23 +157,17 @@ TaskManager.defineTask(BACKGROUND_LOCATION_TASK, async ({ data, error }) => {
                 console.log('[ContinuousLocation] updateLiveLocation started');
                 const headlessSupabase = await createHeadlessSupabaseClient();
 
+                isBackgroundUploadInFlight = true;
                 const response = await withBackgroundUploadTimeout(
-                    employeeApi.updateLiveLocation(
+                    employeeApi.updateBackgroundLiveLocation(
                         parseInt(employeeId, 10),
                         { latitude: coords.latitude, longitude: coords.longitude },
-                        siteId ? parseInt(siteId, 10) : undefined,
+                        isOnSite,
                         timestampIso,
-                        {
-                            skipReverseGeocoding: true,
-                            backgroundDiagnostics: true,
-                            databaseClient: headlessSupabase,
-                            skipAttendanceLookup: true,
-                            trackingAttendanceId: attendanceId
-                                ? parseInt(attendanceId, 10)
-                                : undefined,
-                        }
+                        headlessSupabase
                     )
                 );
+                isBackgroundUploadInFlight = false;
 
                 if (response.success) {
                     markLocationSent(coords.latitude, coords.longitude, gpsTimestamp);
@@ -173,12 +190,14 @@ TaskManager.defineTask(BACKGROUND_LOCATION_TASK, async ({ data, error }) => {
                             CONTINUOUS_LOCATION_STORAGE_KEYS.employeeId,
                             CONTINUOUS_LOCATION_STORAGE_KEYS.attendanceId,
                             CONTINUOUS_LOCATION_STORAGE_KEYS.siteId,
+                            CONTINUOUS_LOCATION_STORAGE_KEYS.siteContext,
                         ]).catch(() => undefined);
                     }
                 }
             }
         }
     } catch (err: any) {
+        isBackgroundUploadInFlight = false;
         console.warn('[ContinuousLocation] location upload failed', {
             error: err?.message || 'Unknown error',
         });
