@@ -22,6 +22,24 @@ const formatLastUpdated = (timestamp: string | null | undefined): string => {
   return formatDateTime(updated);
 };
 
+type TrackingFreshness = 'LIVE' | 'STALE' | 'OFFLINE';
+
+const getTrackingFreshness = (timestamp: string | null | undefined, now: number): TrackingFreshness => {
+  if (!timestamp) return 'OFFLINE';
+  const updatedAt = parseTimestamp(timestamp).getTime();
+  if (!Number.isFinite(updatedAt)) return 'OFFLINE';
+  const ageMs = Math.max(0, now - updatedAt);
+  if (ageMs <= 2 * 60 * 1000) return 'LIVE';
+  if (ageMs <= 5 * 60 * 1000) return 'STALE';
+  return 'OFFLINE';
+};
+
+const freshnessColor = (freshness: TrackingFreshness): string => {
+  if (freshness === 'LIVE') return '#059669';
+  if (freshness === 'STALE') return '#d97706';
+  return '#64748b';
+};
+
 export const LiveTrackingScreen: React.FC = () => {
   const theme = useTheme();
   const route = useRoute();
@@ -32,7 +50,7 @@ export const LiveTrackingScreen: React.FC = () => {
   const [isRefreshing, setIsRefreshing] = useState(false);
   const isWeb = Platform.OS === 'web';
   // Tick every 30s so "X min ago" labels update automatically without waiting for a refetch
-  const [, setClockTick] = useState(0);
+  const [clockTick, setClockTick] = useState(0);
   useEffect(() => {
     const timer = setInterval(() => setClockTick(t => t + 1), 30000);
     return () => clearInterval(timer);
@@ -76,7 +94,6 @@ export const LiveTrackingScreen: React.FC = () => {
     staleTime: 0,
     refetchOnMount: 'always',
     gcTime: 30 * 1000,
-    refetchInterval: 15 * 1000, // Safety-net poll while realtime handles most updates
   });
 
   // Real-time subscription for immediate location updates
@@ -132,6 +149,12 @@ export const LiveTrackingScreen: React.FC = () => {
           if (!didPatch) {
             void refetch();
           }
+        }
+      )
+      .on('postgres_changes',
+        { event: 'DELETE', schema: 'public', table: 'location_tracking' },
+        () => {
+          void refetch();
         }
       )
       .subscribe();
@@ -196,10 +219,12 @@ export const LiveTrackingScreen: React.FC = () => {
       siteName: loc.site?.name,
       currentStatus: loc.current_status || (loc.is_on_site ? 'On-Site' : 'Outside Site'),
       lastUpdated: loc.timestamp,
+      trackingFreshness: getTrackingFreshness(loc.timestamp, Date.now()),
     }));
-  }, [safeLocations]);
+  }, [safeLocations, clockTick]);
 
   const activeTimestamp = employeeId ? safeLocations[0]?.timestamp : latestLocation?.timestamp;
+  const activeFreshness = getTrackingFreshness(activeTimestamp, Date.now());
 
   if (isLoading && !isRefreshing && !locations) {
     return (
@@ -241,7 +266,7 @@ export const LiveTrackingScreen: React.FC = () => {
                     <Icon name="crosshairs-gps" size={12} color={theme.colors.primary} />
                     <Text variant="bodySmall" style={styles.headerStatusText}>
                       {activeTimestamp
-                        ? `Last updated: ${formatLastUpdated(activeTimestamp)}`
+                        ? `Last updated: ${formatLastUpdated(activeTimestamp)} • ${activeFreshness}`
                         : 'Waiting for the first location sync...'}
                     </Text>
                     {isFetching && (
@@ -341,7 +366,10 @@ export const LiveTrackingScreen: React.FC = () => {
                         ) : null}
                       </View>
                       <Text variant="bodySmall" style={styles.markerTime}>
-                        {marker.lastUpdated ? `Updated: ${formatLastUpdated(marker.lastUpdated)}` : ''}
+                        {marker.lastUpdated ? `Updated: ${formatLastUpdated(marker.lastUpdated)} • ` : ''}
+                        <Text style={{ color: freshnessColor(marker.trackingFreshness), fontWeight: '700' }}>
+                          {marker.trackingFreshness}
+                        </Text>
                       </Text>
                     </TouchableOpacity>
                   ))}
@@ -373,7 +401,7 @@ export const LiveTrackingScreen: React.FC = () => {
                     <Icon name="crosshairs-gps" size={12} color={theme.colors.primary} />
                     <Text variant="bodySmall" style={styles.headerStatusText}>
                       {activeTimestamp
-                        ? `Last updated: ${formatLastUpdated(activeTimestamp)}`
+                        ? `Last updated: ${formatLastUpdated(activeTimestamp)} • ${activeFreshness}`
                         : 'Waiting for the first location sync...'}
                     </Text>
                     {isFetching && (
@@ -477,7 +505,10 @@ export const LiveTrackingScreen: React.FC = () => {
                           ) : null}
                         </View>
                         <Text variant="bodySmall" style={styles.markerTime}>
-                          {marker.lastUpdated ? `Updated: ${formatLastUpdated(marker.lastUpdated)}` : ''}
+                          {marker.lastUpdated ? `Updated: ${formatLastUpdated(marker.lastUpdated)} • ` : ''}
+                          <Text style={{ color: freshnessColor(marker.trackingFreshness), fontWeight: '700' }}>
+                            {marker.trackingFreshness}
+                          </Text>
                         </Text>
                       </TouchableOpacity>
                     ))}

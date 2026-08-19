@@ -6,10 +6,18 @@
  */
 
 import AsyncStorage from '@react-native-async-storage/async-storage';
+import * as Location from 'expo-location';
+import * as TaskManager from 'expo-task-manager';
 import type { Coordinates } from '../types';
 import { isGpsAccurateEnough } from '../utils/geofence';
+import { logger } from '../utils/logger';
 import { employeeApi } from './api';
 import attendanceLocationManager from './attendanceLocationManager';
+import {
+  CONTINUOUS_LOCATION_INTERVALS,
+  CONTINUOUS_LOCATION_STORAGE_KEYS,
+  CONTINUOUS_LOCATION_TASK,
+} from './continuousLocationConfig';
 
 const THROTTLE_MS = 30000;
 const MIN_DISTANCE_METERS = 5;
@@ -17,14 +25,14 @@ const HEARTBEAT_MS = 60000;
 const LOCATION_CACHE_MAX_AGE_MS = 45000;
 
 const STORAGE_KEYS = {
-  IS_TRACKING: '@LocSvc:isTracking',
-  EMPLOYEE_ID: '@LocSvc:employeeId',
-  SITE_ID: '@LocSvc:siteId',
-  LAST_SENT_TS: '@LocSvc:lastSentTs',
-  LAST_SENT_LAT: '@LocSvc:lastSentLat',
-  LAST_SENT_LNG: '@LocSvc:lastSentLng',
-  LAST_ERROR: '@LocSvc:lastError',
-  LOGS: '@LocSvc:logs',
+  IS_TRACKING: CONTINUOUS_LOCATION_STORAGE_KEYS.isTracking,
+  EMPLOYEE_ID: CONTINUOUS_LOCATION_STORAGE_KEYS.employeeId,
+  SITE_ID: CONTINUOUS_LOCATION_STORAGE_KEYS.siteId,
+  LAST_SENT_TS: CONTINUOUS_LOCATION_STORAGE_KEYS.lastSentTimestamp,
+  LAST_SENT_LAT: CONTINUOUS_LOCATION_STORAGE_KEYS.lastSentLatitude,
+  LAST_SENT_LNG: CONTINUOUS_LOCATION_STORAGE_KEYS.lastSentLongitude,
+  LAST_ERROR: CONTINUOUS_LOCATION_STORAGE_KEYS.lastError,
+  LOGS: CONTINUOUS_LOCATION_STORAGE_KEYS.logs,
 };
 
 let isStartingTracking = false;
@@ -39,6 +47,7 @@ let lastSentLng: number | null = null;
 const MAX_LOGS = 80;
 
 const log = async (message: string): Promise<void> => {
+  logger.log(`[ContinuousLocation] ${message}`);
   try {
     const timestamp = new Date().toLocaleTimeString();
     const line = `[${timestamp}] ${message}`;
@@ -53,6 +62,82 @@ const log = async (message: string): Promise<void> => {
     // Best effort only.
   }
 };
+
+async function isBackgroundTaskRunning(): Promise<boolean> {
+  return Location.hasStartedLocationUpdatesAsync(CONTINUOUS_LOCATION_TASK).catch(() => false);
+}
+
+async function requestBackgroundPermission(): Promise<boolean> {
+  const servicesEnabled = await Location.hasServicesEnabledAsync().catch(() => false);
+  if (!servicesEnabled) {
+    await log('location services disabled');
+    return false;
+  }
+
+  let permission = await Location.getBackgroundPermissionsAsync();
+  if (permission.status !== 'granted') {
+    permission = await Location.requestBackgroundPermissionsAsync();
+  }
+
+  if (permission.status !== 'granted') {
+    await log('permission missing: background location');
+    return false;
+  }
+
+  return true;
+}
+
+async function startBackgroundTask(): Promise<{ success: boolean; error?: string }> {
+  await log('tracking start requested');
+
+  if (!TaskManager.isTaskDefined(CONTINUOUS_LOCATION_TASK)) {
+    await log('background task is not defined in this native runtime');
+    return { success: false, error: 'Background tracking requires the latest app build.' };
+  }
+
+  if (await isBackgroundTaskRunning()) {
+    await log('tracking already running');
+    return { success: true };
+  }
+
+  if (!(await requestBackgroundPermission())) {
+    return {
+      success: false,
+      error: 'Allow background location (“Allow all the time”) to continue tracking when the app is closed.',
+    };
+  }
+
+  try {
+    await Location.startLocationUpdatesAsync(CONTINUOUS_LOCATION_TASK, {
+      accuracy: Location.Accuracy.Balanced,
+      distanceInterval: CONTINUOUS_LOCATION_INTERVALS.distanceMeters,
+      timeInterval: CONTINUOUS_LOCATION_INTERVALS.timeMs,
+      activityType: Location.ActivityType.Other,
+      pausesUpdatesAutomatically: false,
+      foregroundService: {
+        notificationTitle: 'Attendance tracking active',
+        notificationBody: 'Location is shared while you are checked in',
+        notificationColor: '#2563eb',
+      },
+    });
+    await log('tracking started');
+    return { success: true };
+  } catch (error: any) {
+    await log(`tracking start failed: ${error?.message || 'Unknown error'}`);
+    return { success: false, error: error?.message || 'Failed to start background tracking.' };
+  }
+}
+
+async function stopBackgroundTask(): Promise<void> {
+  await log('tracking stop requested');
+  const running = await isBackgroundTaskRunning();
+  if (running) {
+    await Location.stopLocationUpdatesAsync(CONTINUOUS_LOCATION_TASK).catch(async (error: any) => {
+      await log(`tracking stop failed: ${error?.message || 'Unknown error'}`);
+    });
+  }
+  await log('tracking stopped');
+}
 
 function haversineMeters(lat1: number, lon1: number, lat2: number, lon2: number): number {
   const radius = 6371000;
@@ -186,7 +271,7 @@ const LocationTrackingService = {
       const { hasStartedLocationUpdatesAsync, stopLocationUpdatesAsync } =
         require('expo-location') as typeof import('expo-location');
 
-      const legacyTasks = ['BACKGROUND_LOC_TASK', 'AIHP_BACKGROUND_LOCATION_TRACKING'];
+      const legacyTasks = ['BACKGROUND_LOC_TASK'];
       for (const task of legacyTasks) {
         try {
           const running = await hasStartedLocationUpdatesAsync(task).catch(() => false);
@@ -247,8 +332,9 @@ const LocationTrackingService = {
       }
 
       await startForegroundFeed(employeeId, siteId);
-      await log('🎉 Check-in complete');
-      return { success: true };
+      const backgroundResult = await startBackgroundTask();
+      await log('check-in tracking lifecycle complete');
+      return backgroundResult;
     } catch (error: any) {
       await log(`❌ Check-in error: ${error?.message || 'Unknown error'}`);
       return {
@@ -263,6 +349,7 @@ const LocationTrackingService = {
   async checkOutEmployee(): Promise<void> {
     await log('🛑 Check-out: stopping tracking');
     stopForegroundFeed();
+    await stopBackgroundTask();
 
     lastSentTs = 0;
     lastSentLat = null;
@@ -281,7 +368,7 @@ const LocationTrackingService = {
     await log('✅ Check-out complete');
   },
 
-  async resumeTrackingIfNeeded(): Promise<void> {
+  async resumeTrackingIfNeeded(expectedEmployeeId?: number): Promise<void> {
     try {
       await this._cleanupLegacyTaskIfRunning();
 
@@ -292,13 +379,35 @@ const LocationTrackingService = {
       ]);
 
       if (isTracking !== 'true' || !employeeIdStr) {
+        if (await isBackgroundTaskRunning()) {
+          await log('active attendance missing; stopping orphan task');
+          await stopBackgroundTask();
+        }
         return;
       }
 
       const employeeId = parseInt(employeeIdStr, 10);
+      if (expectedEmployeeId && employeeId !== expectedEmployeeId) {
+        await log('stored employee does not match authenticated employee; stopping tracking');
+        await this.checkOutEmployee();
+        return;
+      }
+
+      const attendanceResult = await employeeApi.getCurrentAttendance(employeeId);
+      if (!attendanceResult.success) {
+        await log(`active attendance check failed: ${attendanceResult.error || 'Unknown error'}`);
+        return;
+      }
+
+      if (!attendanceResult.data) {
+        await log('active attendance missing');
+        await this.checkOutEmployee();
+        return;
+      }
+
       const siteId = siteIdStr ? parseInt(siteIdStr, 10) : undefined;
 
-      await log(`🔄 Resume tracking for employee=${employeeId}`);
+      await log(`task restart attempt for employee=${employeeId}`);
       await this.checkInEmployee(employeeId, siteId);
     } catch (error: any) {
       await log(`❌ Resume failed: ${error?.message || 'Unknown error'}`);
@@ -350,7 +459,8 @@ const LocationTrackingService = {
   async isTrackingActive(): Promise<boolean> {
     try {
       const flag = await AsyncStorage.getItem(STORAGE_KEYS.IS_TRACKING);
-      return flag === 'true' && locationUpdatesUnsubscribe !== null;
+      return flag === 'true' &&
+        (locationUpdatesUnsubscribe !== null || await isBackgroundTaskRunning());
     } catch {
       return false;
     }

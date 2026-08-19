@@ -11,17 +11,23 @@
  */
 
 import * as TaskManager from 'expo-task-manager';
+import * as Location from 'expo-location';
 import { updateLocation, getLastSentTimestamp, getLastSentCoords, markLocationSent } from './locationState';
 import { calculateDistance } from '../utils/geofence';
 import { employeeApi } from './api';
 import AsyncStorage from '@react-native-async-storage/async-storage';
+import {
+    CONTINUOUS_LOCATION_INTERVALS,
+    CONTINUOUS_LOCATION_STORAGE_KEYS,
+    CONTINUOUS_LOCATION_TASK,
+} from './continuousLocationConfig';
 
 // Configuration (aligned with foregroundSender)
-const SEND_INTERVAL_MS = 30000;
-const MOVE_THRESHOLD_METERS = 5;
+const SEND_INTERVAL_MS = CONTINUOUS_LOCATION_INTERVALS.timeMs;
+const MOVE_THRESHOLD_METERS = CONTINUOUS_LOCATION_INTERVALS.distanceMeters;
 
 // Task name - must match startLocationUpdatesAsync
-export const BACKGROUND_LOCATION_TASK = 'AIHP_BACKGROUND_LOCATION_TRACKING';
+export const BACKGROUND_LOCATION_TASK = CONTINUOUS_LOCATION_TASK;
 
 /**
  * Background Location Task (GPS COLLECTION ONLY)
@@ -34,7 +40,7 @@ export const BACKGROUND_LOCATION_TASK = 'AIHP_BACKGROUND_LOCATION_TRACKING';
 TaskManager.defineTask(BACKGROUND_LOCATION_TASK, async ({ data, error }) => {
     if (error) {
         // Minimal logging for critical errors
-        console.error(`[BackgroundTask] ERROR:`, error);
+        console.error('[ContinuousLocation] background task error', error);
         return;
     }
 
@@ -67,7 +73,7 @@ TaskManager.defineTask(BACKGROUND_LOCATION_TASK, async ({ data, error }) => {
 
         // 2. Movement Check
         const lastSentCoords = getLastSentCoords();
-        let shouldSend = false;
+        let shouldSend = now - lastSentAt >= CONTINUOUS_LOCATION_INTERVALS.heartbeatMs;
 
         if (!lastSentCoords) {
             shouldSend = true;
@@ -76,32 +82,58 @@ TaskManager.defineTask(BACKGROUND_LOCATION_TASK, async ({ data, error }) => {
                 { latitude: coords.latitude, longitude: coords.longitude },
                 lastSentCoords
             );
-            if (distance >= MOVE_THRESHOLD_METERS) {
+            if (!shouldSend && distance >= MOVE_THRESHOLD_METERS) {
                 shouldSend = true;
             }
         }
 
         // 3. Attempt Send
         if (shouldSend) {
-            const employeeId = await AsyncStorage.getItem('@liveLocation:employeeId');
+            const employeeId = await AsyncStorage.getItem(CONTINUOUS_LOCATION_STORAGE_KEYS.employeeId);
             if (employeeId) {
-                const siteId = await AsyncStorage.getItem('@liveLocation:siteId');
+                const siteId = await AsyncStorage.getItem(CONTINUOUS_LOCATION_STORAGE_KEYS.siteId);
                 const timestampIso = new Date(gpsTimestamp).toISOString();
 
-                // Fire and forget send
-                employeeApi.updateLiveLocation(
+                console.log('[ContinuousLocation] background location received', {
+                    timestamp: timestampIso,
+                    accuracy: coords.accuracy ?? null,
+                });
+
+                const response = await employeeApi.updateLiveLocation(
                     parseInt(employeeId, 10),
                     { latitude: coords.latitude, longitude: coords.longitude },
                     siteId ? parseInt(siteId, 10) : undefined,
-                    timestampIso
-                ).then(res => {
-                    if (res.success) {
-                        markLocationSent(coords.latitude, coords.longitude, gpsTimestamp);
+                    timestampIso,
+                    { skipReverseGeocoding: true }
+                );
+
+                if (response.success) {
+                    markLocationSent(coords.latitude, coords.longitude, gpsTimestamp);
+                    console.log('[ContinuousLocation] location upload success', { timestamp: timestampIso });
+                } else {
+                    console.warn('[ContinuousLocation] location upload failure', {
+                        error: response.error || 'Unknown error',
+                    });
+
+                    if (response.error === 'Not currently checked in') {
+                        console.log('[ContinuousLocation] active attendance missing; stopping task');
+                        const started = await Location.hasStartedLocationUpdatesAsync(CONTINUOUS_LOCATION_TASK)
+                            .catch(() => false);
+                        if (started) {
+                            await Location.stopLocationUpdatesAsync(CONTINUOUS_LOCATION_TASK).catch(() => undefined);
+                        }
+                        await AsyncStorage.multiRemove([
+                            CONTINUOUS_LOCATION_STORAGE_KEYS.isTracking,
+                            CONTINUOUS_LOCATION_STORAGE_KEYS.employeeId,
+                            CONTINUOUS_LOCATION_STORAGE_KEYS.siteId,
+                        ]).catch(() => undefined);
                     }
-                }).catch(() => { });
+                }
             }
         }
     } catch (err: any) {
-        // Silently catch exceptions to prevent task crashes
+        console.warn('[ContinuousLocation] background task processing failure', {
+            error: err?.message || 'Unknown error',
+        });
     }
 });

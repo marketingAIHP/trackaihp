@@ -3288,7 +3288,8 @@ export const employeeApi = {
     employeeId: number,
     location: Coordinates,
     siteId?: number,
-    timestamp?: string
+    timestamp?: string,
+    options?: { skipReverseGeocoding?: boolean }
   ): Promise<ApiResponse<LocationTracking>> {
     try {
       if (!isSupabaseConfigured) {
@@ -3298,7 +3299,14 @@ export const employeeApi = {
       // Check if employee has an active check-in
       // OPTIMIZATION: In the future, we could skip this for background updates if we trust the client
       const currentAttendance = await this.getCurrentAttendance(employeeId);
-      if (!currentAttendance.success || !currentAttendance.data) {
+      if (!currentAttendance.success) {
+        return {
+          success: false,
+          error: currentAttendance.error || 'Unable to verify active attendance',
+        };
+      }
+
+      if (!currentAttendance.data) {
         return { success: false, error: 'Not currently checked in' };
       }
 
@@ -3402,11 +3410,9 @@ export const employeeApi = {
         is_on_site: isOnSite,
         timestamp: nextTimestamp,
       };
-      const locationName = await resolveLocationName(location);
-      const payloadWithLocationName = {
-        ...payload,
-        location_name: locationName,
-      };
+      const payloadWithLocationName = options?.skipReverseGeocoding
+        ? payload
+        : { ...payload, location_name: await resolveLocationName(location) };
 
       logger.debug('[updateLiveLocation] Writing current live location:', JSON.stringify(payloadWithLocationName));
 

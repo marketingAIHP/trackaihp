@@ -88,11 +88,6 @@ function AppContent() {
     // Start app state monitoring for debugging
     AppStateMonitor.start();
 
-    // Resume background location tracking if employee was checked in
-    LocationTrackingService.resumeTrackingIfNeeded().catch((err) => {
-      logger.warn('[App] Failed to resume location tracking:', err);
-    });
-
     // Initialize app - faster startup
     const initTimer = setTimeout(() => {
       setIsLoading(false);
@@ -104,6 +99,32 @@ function AppContent() {
       AppStateMonitor.stop();
     };
   }, []);
+
+  useEffect(() => {
+    if (!currentUser || currentUser.type !== 'employee') {
+      return;
+    }
+
+    let isCancelled = false;
+    const reconcileTracking = () => {
+      if (isCancelled) return;
+      LocationTrackingService.resumeTrackingIfNeeded(currentUser.id).catch((err) => {
+        logger.warn('[App] Failed to reconcile location tracking:', err);
+      });
+    };
+
+    reconcileTracking();
+    const subscription = AppState.addEventListener('change', (nextState) => {
+      if (nextState === 'active') {
+        reconcileTracking();
+      }
+    });
+
+    return () => {
+      isCancelled = true;
+      subscription.remove();
+    };
+  }, [currentUser]);
 
   useEffect(() => {
     setupNotificationChannels().catch((error) => {
