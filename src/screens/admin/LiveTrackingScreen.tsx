@@ -40,6 +40,43 @@ const freshnessColor = (freshness: TrackingFreshness): string => {
   return '#64748b';
 };
 
+const freshnessMessage = (freshness: TrackingFreshness): string => {
+  if (freshness === 'LIVE') return 'Receiving current GPS updates';
+  if (freshness === 'STALE') return 'Location update is delayed';
+  return 'No recent connection — showing last known location';
+};
+
+const TrackingStatusSummary: React.FC<{
+  timestamp?: string | null;
+  freshness: TrackingFreshness;
+  isOnSite?: boolean;
+  isFetching?: boolean;
+}> = ({ timestamp, freshness, isOnSite, isFetching }) => {
+  const boundaryLabel = typeof isOnSite === 'boolean'
+    ? `${freshness === 'LIVE' ? '' : 'LAST KNOWN: '}${isOnSite ? 'ON SITE' : 'OUTSIDE'}`
+    : 'BOUNDARY UNKNOWN';
+
+  return (
+    <View style={styles.statusSummary}>
+      <View style={styles.statusChipRow}>
+        <View style={[styles.statusChip, { backgroundColor: freshnessColor(freshness) }]}>
+          <Icon name={freshness === 'LIVE' ? 'access-point' : freshness === 'STALE' ? 'clock-alert-outline' : 'wifi-off'} size={13} color="#fff" />
+          <Text style={styles.statusChipText}>{freshness}</Text>
+        </View>
+        <View style={[styles.statusChip, { backgroundColor: isOnSite ? '#059669' : '#dc2626' }]}>
+          <Icon name={isOnSite ? 'map-marker-check' : 'map-marker-alert'} size={13} color="#fff" />
+          <Text style={styles.statusChipText}>{boundaryLabel}</Text>
+        </View>
+        {isFetching ? <Text style={styles.syncingText}>Syncing...</Text> : null}
+      </View>
+      <Text style={styles.statusExplanation}>{freshnessMessage(freshness)}</Text>
+      <Text style={styles.statusTimestamp}>
+        {timestamp ? `GPS updated: ${formatLastUpdated(timestamp)}` : 'No GPS location received yet'}
+      </Text>
+    </View>
+  );
+};
+
 export const LiveTrackingScreen: React.FC = () => {
   const theme = useTheme();
   const route = useRoute();
@@ -225,6 +262,7 @@ export const LiveTrackingScreen: React.FC = () => {
 
   const activeTimestamp = employeeId ? safeLocations[0]?.timestamp : latestLocation?.timestamp;
   const activeFreshness = getTrackingFreshness(activeTimestamp, Date.now());
+  const activeIsOnSite = employeeId ? safeLocations[0]?.is_on_site : latestLocation?.is_on_site;
 
   if (isLoading && !isRefreshing && !locations) {
     return (
@@ -262,19 +300,12 @@ export const LiveTrackingScreen: React.FC = () => {
                         : 'Employee Location'
                       : 'Employee Locations'}
                   </Text>
-                  <View style={styles.headerStatusRow}>
-                    <Icon name="crosshairs-gps" size={12} color={theme.colors.primary} />
-                    <Text variant="bodySmall" style={styles.headerStatusText}>
-                      {activeTimestamp
-                        ? `Last updated: ${formatLastUpdated(activeTimestamp)} • ${activeFreshness}`
-                        : 'Waiting for the first location sync...'}
-                    </Text>
-                    {isFetching && (
-                      <Text variant="bodySmall" style={styles.syncingText}>
-                        (Syncing...)
-                      </Text>
-                    )}
-                  </View>
+                  <TrackingStatusSummary
+                    timestamp={activeTimestamp}
+                    freshness={activeFreshness}
+                    isOnSite={activeIsOnSite}
+                    isFetching={isFetching}
+                  />
                   {employeeId && safeLocations[0]?.check_in_time ? (
                     <Text variant="bodySmall" style={styles.checkInText}>
                       Checked in: {formatTime(safeLocations[0].check_in_time)}
@@ -365,12 +396,21 @@ export const LiveTrackingScreen: React.FC = () => {
                           </Text>
                         ) : null}
                       </View>
-                      <Text variant="bodySmall" style={styles.markerTime}>
-                        {marker.lastUpdated ? `Updated: ${formatLastUpdated(marker.lastUpdated)} • ` : ''}
-                        <Text style={{ color: freshnessColor(marker.trackingFreshness), fontWeight: '700' }}>
-                          {marker.trackingFreshness}
+                      <View style={styles.markerStatusColumn}>
+                        <View style={styles.compactChipRow}>
+                          <View style={[styles.compactChip, { backgroundColor: freshnessColor(marker.trackingFreshness) }]}>
+                            <Text style={styles.compactChipText}>{marker.trackingFreshness}</Text>
+                          </View>
+                          <View style={[styles.compactChip, { backgroundColor: marker.isOnSite ? '#059669' : '#dc2626' }]}>
+                            <Text style={styles.compactChipText}>
+                              {marker.trackingFreshness === 'LIVE' ? '' : 'LAST KNOWN: '}{marker.isOnSite ? 'ON SITE' : 'OUTSIDE'}
+                            </Text>
+                          </View>
+                        </View>
+                        <Text variant="bodySmall" style={styles.markerTime}>
+                          {marker.lastUpdated ? formatLastUpdated(marker.lastUpdated) : 'No GPS update'}
                         </Text>
-                      </Text>
+                      </View>
                     </TouchableOpacity>
                   ))}
                 </View>
@@ -397,19 +437,12 @@ export const LiveTrackingScreen: React.FC = () => {
                         : 'Employee Location'
                       : 'Employee Locations'}
                   </Text>
-                  <View style={styles.headerStatusRow}>
-                    <Icon name="crosshairs-gps" size={12} color={theme.colors.primary} />
-                    <Text variant="bodySmall" style={styles.headerStatusText}>
-                      {activeTimestamp
-                        ? `Last updated: ${formatLastUpdated(activeTimestamp)} • ${activeFreshness}`
-                        : 'Waiting for the first location sync...'}
-                    </Text>
-                    {isFetching && (
-                      <Text variant="bodySmall" style={styles.syncingText}>
-                        (Syncing...)
-                      </Text>
-                    )}
-                  </View>
+                  <TrackingStatusSummary
+                    timestamp={activeTimestamp}
+                    freshness={activeFreshness}
+                    isOnSite={activeIsOnSite}
+                    isFetching={isFetching}
+                  />
                   {employeeId && safeLocations[0]?.check_in_time ? (
                     <Text variant="bodySmall" style={styles.checkInText}>
                       Checked in: {formatTime(safeLocations[0].check_in_time)}
@@ -504,12 +537,21 @@ export const LiveTrackingScreen: React.FC = () => {
                             </Text>
                           ) : null}
                         </View>
-                        <Text variant="bodySmall" style={styles.markerTime}>
-                          {marker.lastUpdated ? `Updated: ${formatLastUpdated(marker.lastUpdated)} • ` : ''}
-                          <Text style={{ color: freshnessColor(marker.trackingFreshness), fontWeight: '700' }}>
-                            {marker.trackingFreshness}
+                        <View style={styles.markerStatusColumn}>
+                          <View style={styles.compactChipRow}>
+                            <View style={[styles.compactChip, { backgroundColor: freshnessColor(marker.trackingFreshness) }]}>
+                              <Text style={styles.compactChipText}>{marker.trackingFreshness}</Text>
+                            </View>
+                            <View style={[styles.compactChip, { backgroundColor: marker.isOnSite ? '#059669' : '#dc2626' }]}>
+                              <Text style={styles.compactChipText}>
+                                {marker.trackingFreshness === 'LIVE' ? '' : 'LAST KNOWN: '}{marker.isOnSite ? 'ON SITE' : 'OUTSIDE'}
+                              </Text>
+                            </View>
+                          </View>
+                          <Text variant="bodySmall" style={styles.markerTime}>
+                            {marker.lastUpdated ? formatLastUpdated(marker.lastUpdated) : 'No GPS update'}
                           </Text>
-                        </Text>
+                        </View>
                       </TouchableOpacity>
                     ))}
                   </ScrollView>
@@ -776,6 +818,28 @@ const styles = StyleSheet.create({
     maxWidth: 130,
     textAlign: 'right',
   },
+  markerStatusColumn: {
+    alignItems: 'flex-end',
+    marginLeft: 8,
+    maxWidth: 250,
+  },
+  compactChipRow: {
+    flexDirection: 'row',
+    justifyContent: 'flex-end',
+    flexWrap: 'wrap',
+    gap: 5,
+    marginBottom: 4,
+  },
+  compactChip: {
+    borderRadius: 999,
+    paddingHorizontal: 7,
+    paddingVertical: 3,
+  },
+  compactChipText: {
+    color: '#fff',
+    fontSize: 9,
+    fontWeight: '800',
+  },
   scrollView: {
     flex: 1,
   },
@@ -806,6 +870,38 @@ const styles = StyleSheet.create({
   },
   titleContainer: {
     flex: 1,
+  },
+  statusSummary: {
+    marginTop: 8,
+    gap: 3,
+  },
+  statusChipRow: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    flexWrap: 'wrap',
+    gap: 7,
+  },
+  statusChip: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: 4,
+    borderRadius: 999,
+    paddingHorizontal: 9,
+    paddingVertical: 5,
+  },
+  statusChipText: {
+    color: '#fff',
+    fontSize: 10,
+    fontWeight: '800',
+  },
+  statusExplanation: {
+    color: '#374151',
+    fontSize: 12,
+    fontWeight: '600',
+  },
+  statusTimestamp: {
+    color: '#6b7280',
+    fontSize: 11,
   },
   headerStatusRow: {
     flexDirection: 'row',

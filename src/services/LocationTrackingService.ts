@@ -14,6 +14,7 @@ import { logger } from '../utils/logger';
 import { employeeApi } from './api';
 import attendanceLocationManager from './attendanceLocationManager';
 import {
+  CONTINUOUS_LOCATION_CONFIGURATION_VERSION,
   CONTINUOUS_LOCATION_INTERVALS,
   CONTINUOUS_LOCATION_STORAGE_KEYS,
   CONTINUOUS_LOCATION_TASK,
@@ -95,7 +96,12 @@ async function startBackgroundTask(): Promise<{ success: boolean; error?: string
     return { success: false, error: 'Background tracking requires the latest app build.' };
   }
 
-  if (await isBackgroundTaskRunning()) {
+  const isRunning = await isBackgroundTaskRunning();
+  const appliedConfigurationVersion = await AsyncStorage.getItem(
+    CONTINUOUS_LOCATION_STORAGE_KEYS.configurationVersion
+  );
+
+  if (isRunning && appliedConfigurationVersion === CONTINUOUS_LOCATION_CONFIGURATION_VERSION) {
     await log('tracking already running');
     return { success: true };
   }
@@ -107,10 +113,17 @@ async function startBackgroundTask(): Promise<{ success: boolean; error?: string
     };
   }
 
+  if (isRunning) {
+    await log('tracking configuration changed; restarting task once');
+    await Location.stopLocationUpdatesAsync(CONTINUOUS_LOCATION_TASK);
+  }
+
   try {
     await Location.startLocationUpdatesAsync(CONTINUOUS_LOCATION_TASK, {
       accuracy: Location.Accuracy.Balanced,
-      distanceInterval: CONTINUOUS_LOCATION_INTERVALS.distanceMeters,
+      // Request time-based callbacks even when the employee is stationary.
+      // Upload throttling and the movement threshold remain enforced by the task.
+      distanceInterval: CONTINUOUS_LOCATION_INTERVALS.callbackDistanceMeters,
       timeInterval: CONTINUOUS_LOCATION_INTERVALS.timeMs,
       activityType: Location.ActivityType.Other,
       pausesUpdatesAutomatically: false,
@@ -120,6 +133,10 @@ async function startBackgroundTask(): Promise<{ success: boolean; error?: string
         notificationColor: '#2563eb',
       },
     });
+    await AsyncStorage.setItem(
+      CONTINUOUS_LOCATION_STORAGE_KEYS.configurationVersion,
+      CONTINUOUS_LOCATION_CONFIGURATION_VERSION
+    );
     await log('tracking started');
     return { success: true };
   } catch (error: any) {
