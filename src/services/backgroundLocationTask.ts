@@ -25,6 +25,25 @@ import {
 // Configuration (aligned with foregroundSender)
 const SEND_INTERVAL_MS = CONTINUOUS_LOCATION_INTERVALS.timeMs;
 const MOVE_THRESHOLD_METERS = CONTINUOUS_LOCATION_INTERVALS.distanceMeters;
+const BACKGROUND_UPLOAD_TIMEOUT_MS = 20000;
+
+async function withBackgroundUploadTimeout<T>(operation: Promise<T>): Promise<T> {
+    let timeoutId: ReturnType<typeof setTimeout> | undefined;
+
+    try {
+        return await Promise.race([
+            operation,
+            new Promise<never>((_, reject) => {
+                timeoutId = setTimeout(
+                    () => reject(new Error('Background location upload timed out')),
+                    BACKGROUND_UPLOAD_TIMEOUT_MS
+                );
+            }),
+        ]);
+    } finally {
+        if (timeoutId) clearTimeout(timeoutId);
+    }
+}
 
 // Task name - must match startLocationUpdatesAsync
 export const BACKGROUND_LOCATION_TASK = CONTINUOUS_LOCATION_TASK;
@@ -98,22 +117,26 @@ TaskManager.defineTask(BACKGROUND_LOCATION_TASK, async ({ data, error }) => {
                     timestamp: timestampIso,
                     accuracy: coords.accuracy ?? null,
                 });
+                console.log('[ContinuousLocation] updateLiveLocation started');
 
-                const response = await employeeApi.updateLiveLocation(
-                    parseInt(employeeId, 10),
-                    { latitude: coords.latitude, longitude: coords.longitude },
-                    siteId ? parseInt(siteId, 10) : undefined,
-                    timestampIso,
-                    { skipReverseGeocoding: true }
+                const response = await withBackgroundUploadTimeout(
+                    employeeApi.updateLiveLocation(
+                        parseInt(employeeId, 10),
+                        { latitude: coords.latitude, longitude: coords.longitude },
+                        siteId ? parseInt(siteId, 10) : undefined,
+                        timestampIso,
+                        { skipReverseGeocoding: true, backgroundDiagnostics: true }
+                    )
                 );
 
                 if (response.success) {
                     markLocationSent(coords.latitude, coords.longitude, gpsTimestamp);
-                    console.log('[ContinuousLocation] location upload success', { timestamp: timestampIso });
+                    console.log('[ContinuousLocation] updateLiveLocation completed');
                 } else {
-                    console.warn('[ContinuousLocation] location upload failure', {
+                    console.warn('[ContinuousLocation] location upload failed', {
                         error: response.error || 'Unknown error',
                     });
+                    console.log('[ContinuousLocation] updateLiveLocation completed');
 
                     if (response.error === 'Not currently checked in') {
                         console.log('[ContinuousLocation] active attendance missing; stopping task');
@@ -132,8 +155,9 @@ TaskManager.defineTask(BACKGROUND_LOCATION_TASK, async ({ data, error }) => {
             }
         }
     } catch (err: any) {
-        console.warn('[ContinuousLocation] background task processing failure', {
+        console.warn('[ContinuousLocation] location upload failed', {
             error: err?.message || 'Unknown error',
         });
+        console.log('[ContinuousLocation] updateLiveLocation completed');
     }
 });

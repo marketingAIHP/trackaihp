@@ -3289,7 +3289,7 @@ export const employeeApi = {
     location: Coordinates,
     siteId?: number,
     timestamp?: string,
-    options?: { skipReverseGeocoding?: boolean }
+    options?: { skipReverseGeocoding?: boolean; backgroundDiagnostics?: boolean }
   ): Promise<ApiResponse<LocationTracking>> {
     try {
       if (!isSupabaseConfigured) {
@@ -3298,8 +3298,23 @@ export const employeeApi = {
 
       // Check if employee has an active check-in
       // OPTIMIZATION: In the future, we could skip this for background updates if we trust the client
+      if (options?.backgroundDiagnostics) {
+        console.log('[ContinuousLocation] attendance lookup started');
+      }
       const currentAttendance = await this.getCurrentAttendance(employeeId);
+      if (options?.backgroundDiagnostics) {
+        console.log('[ContinuousLocation] attendance lookup completed', {
+          success: currentAttendance.success,
+          hasActiveAttendance: Boolean(currentAttendance.data),
+        });
+      }
       if (!currentAttendance.success) {
+        if (options?.backgroundDiagnostics) {
+          console.warn('[ContinuousLocation] location upload failed', {
+            stage: 'attendance_lookup',
+            error: currentAttendance.error || 'Unable to verify active attendance',
+          });
+        }
         return {
           success: false,
           error: currentAttendance.error || 'Unable to verify active attendance',
@@ -3307,6 +3322,11 @@ export const employeeApi = {
       }
 
       if (!currentAttendance.data) {
+        if (options?.backgroundDiagnostics) {
+          console.log('[ContinuousLocation] location upload skipped', {
+            reason: 'Not currently checked in',
+          });
+        }
         return { success: false, error: 'Not currently checked in' };
       }
 
@@ -3358,6 +3378,11 @@ export const employeeApi = {
           incomingTimestamp: nextTimestamp,
           latestTimestamp: latestRow.timestamp,
         }));
+        if (options?.backgroundDiagnostics) {
+          console.log('[ContinuousLocation] location upload skipped', {
+            reason: 'Incoming GPS timestamp is older than stored location',
+          });
+        }
         return { success: true, data: latestRow as LocationTracking };
       }
 
@@ -3415,6 +3440,9 @@ export const employeeApi = {
         : { ...payload, location_name: await resolveLocationName(location) };
 
       logger.debug('[updateLiveLocation] Writing current live location:', JSON.stringify(payloadWithLocationName));
+      if (options?.backgroundDiagnostics) {
+        console.log('[ContinuousLocation] location upload started');
+      }
 
       let data: any = null;
       let error: any = null;
@@ -3467,11 +3495,23 @@ export const employeeApi = {
       });
 
       if (error) {
+        if (options?.backgroundDiagnostics) {
+          console.warn('[ContinuousLocation] location upload failed', {
+            stage: 'location_tracking_write',
+            error: error.message || 'Failed to update location',
+          });
+        }
         logger.warn('[updateLiveLocation] Error:', error);
         return { success: false, error: error.message || 'Failed to update location' };
       }
 
       if (!data) {
+        if (options?.backgroundDiagnostics) {
+          console.warn('[ContinuousLocation] location upload failed', {
+            stage: 'location_tracking_write',
+            error: 'No data returned',
+          });
+        }
         logger.warn('[updateLiveLocation] No data returned');
         return { success: false, error: 'Failed to save location data' };
       }
@@ -3488,8 +3528,20 @@ export const employeeApi = {
 
       const result = data;
 
+      if (options?.backgroundDiagnostics) {
+        console.log('[ContinuousLocation] location upload succeeded', {
+          timestamp: result.timestamp,
+        });
+      }
+
       return { success: true, data: result as LocationTracking };
     } catch (error: any) {
+      if (options?.backgroundDiagnostics) {
+        console.warn('[ContinuousLocation] location upload failed', {
+          stage: 'updateLiveLocation',
+          error: error.message || 'Failed to update live location',
+        });
+      }
       return { success: false, error: error.message || 'Failed to update live location' };
     }
   },
