@@ -1,4 +1,4 @@
-import React, { useMemo, useState } from 'react';
+import React, { useEffect, useMemo, useState } from 'react';
 import { View, StyleSheet, ActivityIndicator, Text, Pressable, Linking } from 'react-native';
 import { Image } from 'expo-image';
 import { MaterialCommunityIcons as Icon } from '@expo/vector-icons';
@@ -39,6 +39,7 @@ export const WebViewMap: React.FC<WebViewMapProps> = ({
   const [zoom, setZoom] = useState(initialZoom);
   const [loading, setLoading] = useState(true);
   const [hasError, setHasError] = useState(false);
+  const [loadTimedOut, setLoadTimedOut] = useState(false);
 
   const handleZoomIn = () => {
     const nextZoom = Math.min(zoom + 1, 20);
@@ -96,6 +97,24 @@ export const WebViewMap: React.FC<WebViewMapProps> = ({
     return `https://www.google.com/maps/search/?api=1&query=${latitude},${longitude}`;
   }, [latitude, longitude, markers]);
 
+  useEffect(() => {
+    setLoading(true);
+    setHasError(false);
+    setLoadTimedOut(false);
+  }, [mapUrl]);
+
+  useEffect(() => {
+    if (!loading) return;
+
+    const timeout = setTimeout(() => {
+      setLoadTimedOut(true);
+      setLoading(false);
+      setHasError(true);
+    }, 8000);
+
+    return () => clearTimeout(timeout);
+  }, [loading, mapUrl]);
+
   if (!mapUrl) {
     return (
       <View style={[styles.container, height ? { height } : { flex: 1 }, styles.errorContainer]}>
@@ -116,6 +135,7 @@ export const WebViewMap: React.FC<WebViewMapProps> = ({
           setHasError(false);
         }}
         onLoad={() => setLoading(false)}
+        onLoadEnd={() => setLoading(false)}
         onError={() => {
           setLoading(false);
           setHasError(true);
@@ -132,7 +152,9 @@ export const WebViewMap: React.FC<WebViewMapProps> = ({
         <View style={styles.errorOverlay}>
           <Text style={styles.errorText}>Google map could not be loaded.</Text>
           <Text style={styles.errorHint}>
-            Web map images can fail when the Google Maps key does not allow browser referrers or the Static Maps API.
+            {loadTimedOut
+              ? 'The map image did not finish loading in time on this device.'
+              : 'Web map images can fail when the Google Maps key does not allow browser referrers or the Static Maps API.'}
           </Text>
           <Pressable
             style={styles.fallbackButton}
@@ -185,7 +207,7 @@ const styles = StyleSheet.create({
     bottom: 0,
     justifyContent: 'center',
     alignItems: 'center',
-    backgroundColor: 'rgba(245,245,245,0.7)',
+    backgroundColor: 'rgba(7, 18, 32, 0.15)',
   },
   errorContainer: {
     justifyContent: 'center',
@@ -200,7 +222,7 @@ const styles = StyleSheet.create({
     bottom: 0,
     justifyContent: 'center',
     alignItems: 'center',
-    backgroundColor: 'rgba(245,245,245,0.92)',
+    backgroundColor: 'rgba(245,245,245,0.95)',
     padding: 20,
   },
   errorText: {
