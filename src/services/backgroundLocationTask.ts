@@ -50,6 +50,7 @@ async function withBackgroundUploadTimeout<T>(operation: Promise<T>): Promise<T>
 // Task name - must match startLocationUpdatesAsync
 export const BACKGROUND_LOCATION_TASK = CONTINUOUS_LOCATION_TASK;
 let isBackgroundUploadInFlight = false;
+let backgroundUploadStartedAt = 0;
 
 /**
  * Background Location Task (GPS COLLECTION ONLY)
@@ -112,10 +113,19 @@ TaskManager.defineTask(BACKGROUND_LOCATION_TASK, async ({ data, error }) => {
         // 3. Attempt Send
         if (shouldSend) {
             if (isBackgroundUploadInFlight) {
-                console.log('[ContinuousLocation] location upload skipped', {
-                    reason: 'Previous background upload is still active',
+                const uploadAgeMs = Date.now() - backgroundUploadStartedAt;
+                if (uploadAgeMs < BACKGROUND_UPLOAD_TIMEOUT_MS) {
+                    console.log('[ContinuousLocation] location upload skipped', {
+                        reason: 'Previous background upload is still active',
+                    });
+                    return;
+                }
+
+                console.warn('[ContinuousLocation] location upload failed', {
+                    error: 'Previous background upload exceeded its deadline; retrying',
                 });
-                return;
+                isBackgroundUploadInFlight = false;
+                backgroundUploadStartedAt = 0;
             }
 
             const [isTracking, employeeId] = await Promise.all([
@@ -158,6 +168,7 @@ TaskManager.defineTask(BACKGROUND_LOCATION_TASK, async ({ data, error }) => {
                 const headlessSupabase = await createHeadlessSupabaseClient();
 
                 isBackgroundUploadInFlight = true;
+                backgroundUploadStartedAt = Date.now();
                 const response = await withBackgroundUploadTimeout(
                     employeeApi.updateBackgroundLiveLocation(
                         parseInt(employeeId, 10),
@@ -168,6 +179,7 @@ TaskManager.defineTask(BACKGROUND_LOCATION_TASK, async ({ data, error }) => {
                     )
                 );
                 isBackgroundUploadInFlight = false;
+                backgroundUploadStartedAt = 0;
 
                 if (response.success) {
                     markLocationSent(coords.latitude, coords.longitude, gpsTimestamp);
@@ -198,6 +210,7 @@ TaskManager.defineTask(BACKGROUND_LOCATION_TASK, async ({ data, error }) => {
         }
     } catch (err: any) {
         isBackgroundUploadInFlight = false;
+        backgroundUploadStartedAt = 0;
         console.warn('[ContinuousLocation] location upload failed', {
             error: err?.message || 'Unknown error',
         });

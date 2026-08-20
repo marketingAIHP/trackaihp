@@ -1,6 +1,7 @@
 import {createClient} from '@supabase/supabase-js';
 import {env, envMessages, safeEnv} from '../config/env';
 import AsyncStorage from '@react-native-async-storage/async-storage';
+import { fetch as expoFetch } from 'expo/fetch';
 
 // =============================================================================
 // PERFORMANCE OPTIMIZATION: Supabase Client Configuration
@@ -113,6 +114,9 @@ export async function createHeadlessSupabaseClient() {
         apikey: key,
         Authorization: `Bearer ${accessToken}`,
       },
+      // Expo's native transport continues operating in Android headless tasks,
+      // where React Native's global fetch can remain unresolved indefinitely.
+      fetch: expoFetch as typeof globalThis.fetch,
     },
     db: { schema: 'public' },
   });
