@@ -124,6 +124,7 @@ async function tryStartBackgroundTracking(): Promise<boolean> {
         notificationTitle: 'Attendance tracking active',
         notificationBody: 'Location updates every minute during check-in',
         notificationColor: '#2563eb',
+        killServiceOnDestroy: false,
       },
     });
 

@@ -133,6 +133,7 @@ async function startBackgroundTask(): Promise<{ success: boolean; error?: string
         notificationTitle: 'Attendance tracking active',
         notificationBody: 'Location is shared while you are checked in',
         notificationColor: '#2563eb',
+        killServiceOnDestroy: false,
       },
     });
     await AsyncStorage.setItem(
