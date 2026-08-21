@@ -12,7 +12,7 @@
 
 import * as TaskManager from 'expo-task-manager';
 import * as Location from 'expo-location';
-import { updateLocation, getLastSentTimestamp, getLastSentCoords, markLocationSent } from './locationState';
+import { updateLocation, getLatestLocation, getLastSentTimestamp, getLastSentCoords, markLocationSent } from './locationState';
 import { calculateDistance, checkGeofence } from '../utils/geofence';
 import type { WorkSite } from '../types';
 import { employeeApi } from './api';
@@ -79,6 +79,9 @@ TaskManager.defineTask(BACKGROUND_LOCATION_TASK, async ({ data, error }) => {
         const gpsTimestamp = latest.timestamp || Date.now();
 
         // Update local state ONLY (safeguards are inside updateLocation)
+        const latestLocation = getLatestLocation();
+        const isStaleFix = latestLocation ? gpsTimestamp <= latestLocation.timestamp : false;
+
         const updated = await updateLocation(
             coords.latitude,
             coords.longitude,
@@ -86,7 +89,14 @@ TaskManager.defineTask(BACKGROUND_LOCATION_TASK, async ({ data, error }) => {
             gpsTimestamp
         );
 
-        if (!updated) return;
+        if (!updated && isStaleFix) return;
+
+        if (!updated) {
+            console.warn('[ContinuousLocation] location cache rejected background fix', {
+                accuracy: coords.accuracy ?? null,
+                timestamp: gpsTimestamp,
+            });
+        }
 
         // --- BACKGROUND SENDING LOGIC ---
         // 1. Cooldown Check
