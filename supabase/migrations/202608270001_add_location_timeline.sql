@@ -11,9 +11,16 @@ create table if not exists public.location_timeline (
   site_id bigint references public.work_sites(id) on delete set null,
   event_type text not null check (event_type in ('check_in','location_update','site_arrival','site_departure','unknown_location','movement','check_out','auto_checkout')),
   accuracy double precision,
-  idempotency_key text not null unique,
+  idempotency_key text,
   created_at timestamptz not null default now()
 );
+
+-- Compatibility for databases where the earlier table-only draft was run first.
+-- These changes affect only the new timeline table; no application data is touched.
+alter table public.location_timeline add column if not exists full_address text;
+alter table public.location_timeline add column if not exists idempotency_key text;
+create unique index if not exists location_timeline_idempotency_key_idx
+  on public.location_timeline (idempotency_key);
 
 create index if not exists location_timeline_employee_event_time_idx on public.location_timeline (employee_id, event_time);
 create index if not exists location_timeline_attendance_event_time_idx on public.location_timeline (attendance_id, event_time);
@@ -21,11 +28,11 @@ create index if not exists location_timeline_attendance_event_time_idx on public
 alter table public.location_timeline enable row level security;
 
 create policy "employees insert their own location timeline" on public.location_timeline for insert to authenticated
-  with check (exists (select 1 from public.employees e where e.id = employee_id and e.auth_user_id = auth.uid()));
+  with check (exists (select 1 from public.employees e where e.id = public.location_timeline.employee_id and e.auth_user_id = auth.uid()));
 create policy "employees read their own location timeline" on public.location_timeline for select to authenticated
-  using (exists (select 1 from public.employees e where e.id = employee_id and e.auth_user_id = auth.uid()));
+  using (exists (select 1 from public.employees e where e.id = public.location_timeline.employee_id and e.auth_user_id = auth.uid()));
 create policy "admins read their employee timelines" on public.location_timeline for select to authenticated
-  using (exists (select 1 from public.employees e join public.admins a on a.id = e.admin_id where e.id = employee_id and a.auth_user_id = auth.uid()));
+  using (exists (select 1 from public.employees e join public.admins a on a.id = e.admin_id where e.id = public.location_timeline.employee_id and a.auth_user_id = auth.uid()));
 
 -- A fail-safe observer: it never changes attendance/live location and swallows all errors.
 create or replace function public.capture_auto_checkout_timeline_event()
