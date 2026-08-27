@@ -23,6 +23,7 @@ import {
 } from '../../utils/geofence';
 import { formatDistance } from '../../utils/format';
 import LocationTrackingService from '../../services/LocationTrackingService';
+import { recordTimelineEvent } from '../../services/locationTimelineService';
 
 const IST_TIME_ZONE = 'Asia/Kolkata';
 const HALF_DAY_SECONDS = 4.5 * 60 * 60;
@@ -452,6 +453,7 @@ export const CheckInOutScreen: React.FC = () => {
       throw new Error(response.error || 'Check-in failed');
     },
     onSuccess: async (attendance, payload) => {
+      void recordTimelineEvent({ employeeId, attendanceId: attendance.id, eventType: 'check_in', coordinates: { latitude: attendance.check_in_latitude ?? payload.snapshot.coordinates.latitude, longitude: attendance.check_in_longitude ?? payload.snapshot.coordinates.longitude }, accuracy: payload.snapshot.accuracy, eventTime: attendance.check_in_time, site: payload.detectedSite?.site || attendance.site });
       const siteId = attendance.site_id || profile?.site_id || undefined;
       const trackingResult = await LocationTrackingService.checkInEmployee(
         employeeId,
@@ -492,7 +494,8 @@ export const CheckInOutScreen: React.FC = () => {
       if (response.success && response.data) return response.data;
       throw new Error(response.error || 'Check-out failed');
     },
-    onSuccess: async (attendance) => {
+    onSuccess: async (attendance, payload) => {
+      void recordTimelineEvent({ employeeId, attendanceId: attendance.id, eventType: 'check_out', coordinates: payload.snapshot.coordinates, accuracy: payload.snapshot.accuracy, eventTime: attendance.check_out_time, site: payload.detectedSite?.site || attendance.site });
       await LocationTrackingService.checkOutEmployee();
       await invalidateAttendance();
       Alert.alert(

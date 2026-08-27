@@ -298,6 +298,8 @@ export type AdminStackParamList = {
   LiveTracking: { employeeId?: number } | undefined;
   Notifications: undefined;
   Reports: undefined;
+  LocationTimeline: undefined;
+  TimelineReports: undefined;
   AttendanceLogs: undefined;
   AdminProfile: undefined;
   CreateEmployee: undefined;

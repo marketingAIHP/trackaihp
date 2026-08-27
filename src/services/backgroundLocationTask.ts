@@ -18,6 +18,7 @@ import type { WorkSite } from '../types';
 import { employeeApi } from './api';
 import { createHeadlessSupabaseClient } from './supabase';
 import AsyncStorage from '@react-native-async-storage/async-storage';
+import { recordTimelineLocation } from './locationTimelineService';
 import {
     CONTINUOUS_LOCATION_INTERVALS,
     CONTINUOUS_LOCATION_STORAGE_KEYS,
@@ -61,6 +62,7 @@ let backgroundUploadStartedAt = 0;
  * 3. Fast execution to avoid Android OS penalties.
  */
 TaskManager.defineTask(BACKGROUND_LOCATION_TASK, async ({ data, error }) => {
+    console.log('[ContinuousLocation] task invoked');
     if (error) {
         // Minimal logging for critical errors
         console.error('[ContinuousLocation] background task error', error);
@@ -73,10 +75,16 @@ TaskManager.defineTask(BACKGROUND_LOCATION_TASK, async ({ data, error }) => {
     if (!locations || locations.length === 0) return;
 
     try {
-        // Get the most recent location
-        const latest = locations[0];
+        console.log('[ContinuousLocation] task event count', locations.length);
+        // Android may batch fixes; always process the newest fix.
+        const latest = locations.reduce((newest, candidate) =>
+            (candidate?.timestamp || 0) > (newest?.timestamp || 0) ? candidate : newest,
+            locations[0]
+        );
         const coords = latest.coords;
         const gpsTimestamp = latest.timestamp || Date.now();
+        console.log('[ContinuousLocation] GPS timestamp', gpsTimestamp);
+        console.log('[ContinuousLocation] tracking task running');
 
         // Update local state ONLY (safeguards are inside updateLocation)
         const latestLocation = getLatestLocation();
@@ -193,6 +201,7 @@ TaskManager.defineTask(BACKGROUND_LOCATION_TASK, async ({ data, error }) => {
 
                 if (response.success) {
                     markLocationSent(coords.latitude, coords.longitude, gpsTimestamp);
+                    void recordTimelineLocation({ employeeId: parseInt(employeeId, 10), coordinates: { latitude: coords.latitude, longitude: coords.longitude }, accuracy: coords.accuracy ?? null, eventTime: timestampIso });
                     console.log('[ContinuousLocation] updateLiveLocation completed');
                 } else {
                     console.warn('[ContinuousLocation] location upload failed', {

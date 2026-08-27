@@ -30,6 +30,8 @@ import {OnSiteEmployeesScreen} from '../screens/admin/OnSiteEmployeesScreen';
 import {EmployeesNotAtSiteScreen} from '../screens/admin/EmployeesNotAtSiteScreen';
 import {SiteDetailScreen} from '../screens/admin/SiteDetailScreen';
 import {ReportsScreen} from '../screens/admin/ReportsScreen';
+import {LocationTimelineScreen} from '../screens/admin/LocationTimelineScreen';
+import {TimelineReportsScreen} from '../screens/admin/TimelineReportsScreen';
 import {AttendanceLogsScreen} from '../screens/admin/AttendanceLogsScreen';
 
 const Tab = createBottomTabNavigator();
@@ -251,6 +253,8 @@ export const AdminNavigator: React.FC = () => {
         component={EmployeesNotAtSiteScreen}
         options={{title: 'Employees Not At Site'}}
       />
+      <Stack.Screen name="LocationTimeline" component={LocationTimelineScreen} options={{title: 'Employee Location Timeline'}} />
+      <Stack.Screen name="TimelineReports" component={TimelineReportsScreen} options={{title: 'Timeline Reports'}} />
     </Stack.Navigator>
   );
 };

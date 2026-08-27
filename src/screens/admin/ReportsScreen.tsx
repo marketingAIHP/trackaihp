@@ -1,5 +1,6 @@
 import React, { useMemo, useState } from 'react';
 import { Alert, Platform, ScrollView, StyleSheet, View, useWindowDimensions } from 'react-native';
+import { useNavigation } from '@react-navigation/native';
 import { SafeAreaView } from 'react-native-safe-area-context';
 import { Button, Card, Menu, Text, TextInput, useTheme } from 'react-native-paper';
 import { useQuery } from '@tanstack/react-query';
@@ -141,6 +142,7 @@ function buildReportTypeLabel(
 
 export const ReportsScreen: React.FC = () => {
   const theme = useTheme();
+  const navigation = useNavigation<any>();
   const { currentUser } = useAuth();
   const adminId = currentUser?.id || 0;
   const { width } = useWindowDimensions();
@@ -335,6 +337,7 @@ export const ReportsScreen: React.FC = () => {
             <Text variant="bodyMedium" style={styles.subtitle}>
               Monthly, quarterly, yearly, and manual downloads with checkout type and stored check-in/check-out locations.
             </Text>
+            <Button mode="outlined" icon="map-clock" onPress={() => navigation.navigate('TimelineReports')}>Employee Location Timeline Reports</Button>
 
             <View style={[styles.filterStack, isWideWeb && styles.webFilterStack]}>
               <View style={styles.filterField}>
