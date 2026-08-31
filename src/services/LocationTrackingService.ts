@@ -13,6 +13,7 @@ import { isGpsAccurateEnough } from '../utils/geofence';
 import { logger } from '../utils/logger';
 import { employeeApi } from './api';
 import attendanceLocationManager from './attendanceLocationManager';
+import { recordTimelineLocation } from './locationTimelineService';
 import {
   CONTINUOUS_LOCATION_CONFIGURATION_VERSION,
   CONTINUOUS_LOCATION_INTERVALS,
@@ -214,15 +215,18 @@ async function sendLocation(
   isSendingForegroundLocation = true;
 
   try {
+    const eventTime = new Date().toISOString();
     const result = await employeeApi.updateLiveLocation(
       employeeId,
       { latitude, longitude },
       siteId,
-      new Date().toISOString()
+      eventTime
     );
 
     if (result.success) {
       recordSent(latitude, longitude);
+      // Historical persistence is an observer only; it must not affect the live upload.
+      void recordTimelineLocation({ employeeId, coordinates: { latitude, longitude }, eventTime });
       await AsyncStorage.removeItem(STORAGE_KEYS.LAST_ERROR);
       await log('✅ Location sent');
       return;

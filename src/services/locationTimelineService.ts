@@ -12,7 +12,29 @@ export type TimelineEventType = keyof typeof TIMELINE_EVENT_TYPES;
 export const TIMELINE_HEARTBEAT_MS = 5 * 60 * 1000;
 export const TIMELINE_MOVEMENT_METERS = 75;
 const stateKey = (id: number) => `@timeline:last:${id}`;
+const retryKey = (id: number) => `@timeline:retry:${id}`;
+const MAX_RETRY_ATTEMPTS = 3;
 type State = { attendanceId?: number | null; siteId?: number | null; latitude?: number; longitude?: number; at?: number };
+type TimelineInput = { employeeId: number; attendanceId?: number | null; eventType: TimelineEventType; coordinates?: Coordinates; accuracy?: number | null; eventTime?: string; site?: WorkSite | null };
+type RetryItem = { input: TimelineInput; attempts: number };
+
+function logTimelineFailure(stage: string, input: Partial<TimelineInput>, error: any) {
+  console.warn('[LocationTimeline] write failed', {
+    stage,
+    employee_id: input.employeeId,
+    attendance_id: input.attendanceId ?? null,
+    event_type: input.eventType ?? null,
+    gps_timestamp: input.eventTime ?? null,
+    error: error?.message || String(error),
+    code: error?.code || error?.status || null,
+  });
+}
+
+function isTransientTimelineError(error: any) {
+  const message = `${error?.message || ''} ${error?.code || ''}`.toLowerCase();
+  const status = Number(error?.status || error?.statusCode || 0);
+  return status >= 500 || /network|timeout|timed out|failed to fetch|connection|temporar|pgrst00[23]/.test(message);
+}
 
 async function siteFor(employeeId: number, c: Coordinates): Promise<WorkSite | null> {
   const employee = await supabase.from('employees').select('admin_id').eq('id', employeeId).maybeSingle();
@@ -24,7 +46,7 @@ async function siteFor(employeeId: number, c: Coordinates): Promise<WorkSite | n
     .filter(x => x.distance <= x.site.geofence_radius)
     .sort((a, b) => a.distance - b.distance)[0]?.site || null;
 }
-async function insert(input: { employeeId: number; attendanceId?: number | null; eventType: TimelineEventType; coordinates?: Coordinates; accuracy?: number | null; eventTime?: string; site?: WorkSite | null }) {
+async function insert(input: TimelineInput) {
   const eventTime = input.eventTime || new Date().toISOString();
   const point = input.coordinates ? `${input.coordinates.latitude.toFixed(5)},${input.coordinates.longitude.toFixed(5)}` : 'no-location';
   const row = { employee_id: input.employeeId, attendance_id: input.attendanceId ?? null, event_time: eventTime, latitude: input.coordinates?.latitude ?? null, longitude: input.coordinates?.longitude ?? null, location_name: input.site?.name || 'Unknown location', full_address: input.site?.address ?? null, site_id: input.site?.id ?? null, event_type: input.eventType, accuracy: input.accuracy ?? null, idempotency_key: [input.employeeId, input.attendanceId ?? 'none', input.eventType, eventTime, point].join(':') };
@@ -32,7 +54,55 @@ async function insert(input: { employeeId: number; attendanceId?: number | null;
   if (result.error) throw result.error;
   if (input.coordinates) await AsyncStorage.setItem(stateKey(input.employeeId), JSON.stringify({ attendanceId: input.attendanceId, siteId: row.site_id, latitude: row.latitude, longitude: row.longitude, at: Date.now() })).catch(() => {});
 }
-export async function recordTimelineEvent(input: Parameters<typeof insert>[0]) { try { await insert(input); } catch (error) { console.warn('[LocationTimeline] write failed', error); } }
+
+async function retryOneTimelineEvent(employeeId: number) {
+  const raw = await AsyncStorage.getItem(retryKey(employeeId));
+  const queue: RetryItem[] = raw ? JSON.parse(raw) : [];
+  const item = queue[0];
+  if (!item) return;
+  try {
+    await insert(item.input);
+    queue.shift();
+  } catch (error) {
+    logTimelineFailure('retry_insert', item.input, error);
+    item.attempts += 1;
+    if (!isTransientTimelineError(error) || item.attempts >= MAX_RETRY_ATTEMPTS) queue.shift();
+  }
+  await AsyncStorage.setItem(retryKey(employeeId), JSON.stringify(queue)).catch(() => {});
+}
+
+async function queueRetry(input: TimelineInput) {
+  const raw = await AsyncStorage.getItem(retryKey(input.employeeId));
+  const queue: RetryItem[] = raw ? JSON.parse(raw) : [];
+  const duplicate = queue.some(item => item.input.eventTime === input.eventTime && item.input.eventType === input.eventType && item.input.attendanceId === input.attendanceId);
+  if (!duplicate) {
+    queue.push({ input, attempts: 0 });
+    await AsyncStorage.setItem(retryKey(input.employeeId), JSON.stringify(queue.slice(-MAX_RETRY_ATTEMPTS)));
+  }
+}
+
+async function persistTimelineEvent(input: TimelineInput) {
+  const event = { ...input, eventTime: input.eventTime || new Date().toISOString() };
+  try {
+    await retryOneTimelineEvent(event.employeeId);
+  } catch (error) {
+    logTimelineFailure('retry_queue', event, error);
+  }
+  try {
+    await insert(event);
+  } catch (error) {
+    logTimelineFailure('insert', event, error);
+    if (isTransientTimelineError(error)) {
+      try {
+        await queueRetry(event);
+      } catch (queueError) {
+        logTimelineFailure('retry_queue', event, queueError);
+      }
+    }
+  }
+}
+
+export async function recordTimelineEvent(input: TimelineInput) { await persistTimelineEvent(input); }
 export async function recordTimelineLocation(input: { employeeId: number; attendanceId?: number | null; coordinates: Coordinates; accuracy?: number | null; eventTime?: string; site?: WorkSite | null }) {
   try {
     const raw = await AsyncStorage.getItem(stateKey(input.employeeId)); const previous: State = raw ? JSON.parse(raw) : {};
@@ -40,8 +110,9 @@ export async function recordTimelineLocation(input: { employeeId: number; attend
     const siteId = site?.id ?? null;
     const distance = previous.latitude == null || previous.longitude == null ? Infinity : calculateDistance(input.coordinates, { latitude: previous.latitude, longitude: previous.longitude });
     const type: TimelineEventType = !previous.at ? 'location_update' : previous.siteId !== undefined && previous.siteId !== siteId ? (siteId == null ? 'site_departure' : 'site_arrival') : distance >= TIMELINE_MOVEMENT_METERS ? 'movement' : Date.now() - previous.at >= TIMELINE_HEARTBEAT_MS ? 'location_update' : null as any;
-    if (type) await insert({ ...input, site, eventType: type });
-  } catch (error) { console.warn('[LocationTimeline] processing failed', error); }
+    if (type) await persistTimelineEvent({ ...input, site, eventType: type });
+    else await retryOneTimelineEvent(input.employeeId);
+  } catch (error) { logTimelineFailure('processing', input, error); }
 }
 export async function getLocationTimeline(employeeId: number, from: string, to: string) {
   const result = await supabase.from('location_timeline').select('*, site:work_sites(name,address)').eq('employee_id', employeeId).gte('event_time', from).lt('event_time', to).order('event_time', { ascending: true });
