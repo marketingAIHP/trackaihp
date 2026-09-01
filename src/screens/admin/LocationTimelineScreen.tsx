@@ -53,7 +53,7 @@ export const LocationTimelineScreen: React.FC = () => {
     <ScrollView contentContainerStyle={styles.content}>
       <Card><Card.Content>
         <Text variant="headlineSmall">Employee Location Timeline</Text>
-        <Text variant="bodyMedium" style={styles.help}>Historical, read-only location events collected after deployment.</Text>
+        <Text variant="bodyMedium" style={styles.help}>Historical, read-only location ranges built from real GPS events.</Text>
         <Menu visible={employeeMenu} onDismiss={() => setEmployeeMenu(false)} anchor={<Button mode="outlined" onPress={() => setEmployeeMenu(true)} style={styles.field}>{employee ? `${employee.first_name} ${employee.last_name}` : 'Select employee'}</Button>}>
           {(employeesQuery.data || []).map((item: any) => <Menu.Item key={item.id} title={`${item.first_name} ${item.last_name}`} onPress={() => { setEmployeeId(item.id); setEmployeeMenu(false); }} />)}
         </Menu>
@@ -67,11 +67,11 @@ export const LocationTimelineScreen: React.FC = () => {
       {timelineQuery.error ? <Text style={styles.empty}>Could not load timeline. Check your authorization and try again.</Text> : null}
       {!timelineQuery.isLoading && employeeId && (timelineQuery.data || []).length === 0 ? <Text style={styles.empty}>No timeline events in this period.</Text> : null}
       {(timelineQuery.data || []).map((event: any) => <Card key={event.id} style={styles.event}><Card.Content>
-        <Text variant="titleMedium">{formatTime(event.event_time)}  {label(event.event_type)}</Text>
+        <Text variant="titleMedium">{formatTime(event.event_time)}{event.end_time ? ` - ${formatTime(event.end_time)}` : ''}  {label(event.event_type)}</Text>
         <Text variant="bodyMedium">{event.location_name}</Text>
         {event.full_address || event.site?.address ? <Text variant="bodySmall">{event.full_address || event.site.address}</Text> : null}
         {event.latitude != null && event.longitude != null ? <Text variant="bodySmall">{event.latitude}, {event.longitude}{event.accuracy != null ? `"��y��y� �${event.accuracy}m` : ''}</Text> : null}
-        <Text variant="bodySmall">{formatDate(event.event_time)}{event.attendance_id ? ` �w^~)�v Attendance #${event.attendance_id}` : ''}</Text>
+        <Text variant="bodySmall">{formatDate(event.event_time)}{event.attendance_id ? `  Attendance #${event.attendance_id}` : ''}</Text>
       </Card.Content></Card>)}
       <Button mode="text" onPress={() => Alert.alert('Exports', 'Timeline export is not available until its PDF/CSV builder is added.')} disabled>PDF / CSV export</Button>
     </ScrollView>

@@ -1,7 +1,7 @@
 import { formatDate, formatTime } from '../../utils/format';
 
 export type TimelineReportRow = {
-  id: number; event_time: string; created_at: string; event_type: string; location_name: string;
+  id: string | number; event_time: string; end_time?: string | null; created_at: string; event_type: string; location_name: string;
   full_address?: string | null; site?: { name?: string; address?: string } | null; latitude?: number | null;
   longitude?: number | null; accuracy?: number | null; attendance_id?: number | null;
   employee?: { first_name?: string; last_name?: string; employee_code?: string } | null;
@@ -11,10 +11,14 @@ export type TimelineReportMeta = { employeeName: string; reportType: 'Daily' | '
 
 const eventLabel = (value: string) => value.split('_').map((part) => part.charAt(0).toUpperCase() + part.slice(1)).join(' ');
 const employeeName = (row: TimelineReportRow) => [row.employee?.first_name, row.employee?.last_name].filter(Boolean).join(' ');
+const duration = (row: TimelineReportRow) => {
+  if (!row.end_time) return row.event_type === 'check_out' || row.event_type === 'auto_checkout' ? '' : 'Ongoing';
+  const ms = Math.max(0, new Date(row.end_time).getTime() - new Date(row.event_time).getTime());
+  return `${Math.floor(ms / 3600000)}h ${String(Math.floor(ms / 60000) % 60).padStart(2, '0')}m`;
+};
 const value = (row: TimelineReportRow, key: string) => {
   const values: Record<string, string> = {
-    Date: formatDate(row.event_time), Time: formatTime(row.event_time), 'Employee Name': employeeName(row),
-    'Employee Code': row.employee?.employee_code || '', 'Event Type': eventLabel(row.event_type),
+    Date: formatDate(row.event_time), 'Start Time': formatTime(row.event_time), 'End Time': row.end_time ? formatTime(row.end_time) : '', Duration: duration(row), Status: eventLabel(row.event_type),
     'Location Name': row.location_name || '', 'Full Address': row.full_address || row.site?.address || '',
     'Site Name': row.site?.name || '', Latitude: row.latitude == null ? '' : String(row.latitude),
     Longitude: row.longitude == null ? '' : String(row.longitude), Accuracy: row.accuracy == null ? '' : String(row.accuracy),
@@ -24,7 +28,7 @@ const value = (row: TimelineReportRow, key: string) => {
   };
   return values[key] || '';
 };
-const headers = ['Date', 'Time', 'Employee Name', 'Employee Code', 'Event Type', 'Location Name', 'Full Address', 'Site Name', 'Latitude', 'Longitude', 'Accuracy', 'Attendance ID', 'Checkout Type', 'Created At'];
+const headers = ['Date', 'Start Time', 'End Time', 'Duration', 'Status', 'Location Name', 'Full Address', 'Site Name', 'Latitude', 'Longitude', 'Accuracy', 'Attendance ID', 'Checkout Type'];
 const csvEscape = (text: string) => `"${text.replace(/"/g, '""')}"`;
 
 export function buildTimelineReportCsv(rows: TimelineReportRow[]) {
@@ -41,7 +45,7 @@ const wrap = (input: string, width: number) => {
 
 export function buildTimelineReportPdf(rows: TimelineReportRow[], meta: TimelineReportMeta) {
   const pageWidth = 792, pageHeight = 612, margin = 18, lineHeight = 10, tableTop = 494, bottom = 28;
-  const columns = headers.slice(0, -1); const width = (pageWidth - margin * 2) / columns.length;
+  const columns = headers; const width = (pageWidth - margin * 2) / columns.length;
   const pages: TimelineReportRow[][] = []; let page: TimelineReportRow[] = []; let used = tableTop - 22;
   rows.forEach((row) => { const lines = Math.max(...columns.map((header) => wrap(value(row, header), width - 4).length)); const height = Math.max(18, lines * lineHeight + 6); if (used - height < bottom && page.length) { pages.push(page); page = []; used = tableTop - 22; } page.push(row); used -= height; }); pages.push(page);
   const streams = pages.map((pageRows, index) => {

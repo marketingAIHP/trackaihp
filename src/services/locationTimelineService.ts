@@ -16,9 +16,16 @@ export const TIMELINE_MOVEMENT_METERS = 75;
 const stateKey = (id: number) => `@timeline:last:${id}`;
 const retryKey = (id: number) => `@timeline:retry:${id}`;
 const MAX_RETRY_ATTEMPTS = 3;
-type State = { attendanceId?: number | null; siteId?: number | null; latitude?: number; longitude?: number; at?: number };
+type LogicalState = 'at_site' | 'travelling' | 'unknown';
+type State = { attendanceId?: number | null; siteId?: number | null; latitude?: number; longitude?: number; at?: number; logicalState?: LogicalState; stateStartedAt?: number };
 type TimelineInput = { employeeId: number; attendanceId?: number | null; eventType: TimelineEventType; coordinates?: Coordinates; accuracy?: number | null; eventTime?: string; site?: WorkSite | null };
 type RetryItem = { input: TimelineInput; attempts: number };
+export type TimelineSegment = {
+  id: string; employee_id: number; attendance_id?: number | null; event_time: string; end_time?: string | null;
+  event_type: 'at_site' | 'travelling' | 'unknown_location' | 'check_out' | 'auto_checkout';
+  location_name: string; full_address?: string | null; site_id?: number | null; latitude?: number | null;
+  longitude?: number | null; accuracy?: number | null; created_at: string;
+};
 
 function logTimelineFailure(stage: string, input: Partial<TimelineInput>, error: any) {
   console.warn('[LocationTimeline] write failed', {
@@ -41,13 +48,16 @@ function isTransientTimelineError(error: any) {
 function siteAtCoordinates(site: WorkSite | null, coordinates: Coordinates) {
   return site && checkGeofence(coordinates, site).isWithinGeofence ? site : null;
 }
+async function saveObservationState(employeeId: number, state: State) {
+  await AsyncStorage.setItem(stateKey(employeeId), JSON.stringify(state)).catch(() => {});
+}
 async function insert(input: TimelineInput, databaseClient: SupabaseClient = supabase) {
   const eventTime = input.eventTime || new Date().toISOString();
   const point = input.coordinates ? `${input.coordinates.latitude.toFixed(5)},${input.coordinates.longitude.toFixed(5)}` : 'no-location';
   const row = { employee_id: input.employeeId, attendance_id: input.attendanceId ?? null, event_time: eventTime, latitude: input.coordinates?.latitude ?? null, longitude: input.coordinates?.longitude ?? null, location_name: input.site?.name || 'Unknown location', full_address: input.site?.address ?? null, site_id: input.site?.id ?? null, event_type: input.eventType, accuracy: input.accuracy ?? null, idempotency_key: [input.employeeId, input.attendanceId ?? 'none', input.eventType, eventTime, point].join(':') };
   const result = await databaseClient.from('location_timeline').upsert(row, { onConflict: 'idempotency_key', ignoreDuplicates: true });
   if (result.error) throw result.error;
-  if (input.coordinates) await AsyncStorage.setItem(stateKey(input.employeeId), JSON.stringify({ attendanceId: input.attendanceId, siteId: row.site_id, latitude: row.latitude, longitude: row.longitude, at: Date.now() })).catch(() => {});
+  if (input.coordinates) await saveObservationState(input.employeeId, { attendanceId: input.attendanceId, siteId: row.site_id, latitude: row.latitude ?? undefined, longitude: row.longitude ?? undefined, at: Date.now(), logicalState: row.site_id ? 'at_site' : input.eventType === 'site_departure' || input.eventType === 'movement' ? 'travelling' : 'unknown', stateStartedAt: Date.now() });
 }
 
 async function retryOneTimelineEvent(employeeId: number, databaseClient: SupabaseClient = supabase) {
@@ -123,10 +133,19 @@ export async function recordTimelineLocation(input: { employeeId: number; attend
     }
     const site = input.site === undefined ? siteAtCoordinates(persistedSite, input.coordinates) : siteAtCoordinates(input.site, input.coordinates);
     const siteId = site?.id ?? null;
+    const observedAt = input.eventTime ? Date.parse(input.eventTime) : Date.now();
+    const previousState: LogicalState = previous.logicalState || (previous.siteId ? 'at_site' : 'unknown');
     const distance = previous.latitude == null || previous.longitude == null ? Infinity : calculateDistance(input.coordinates, { latitude: previous.latitude, longitude: previous.longitude });
-    const type: TimelineEventType = !previous.at ? 'location_update' : previous.siteId !== undefined && previous.siteId !== siteId ? (siteId == null ? 'site_departure' : 'site_arrival') : distance >= TIMELINE_MOVEMENT_METERS ? 'movement' : Date.now() - previous.at >= TIMELINE_HEARTBEAT_MS ? 'location_update' : null as any;
+    let nextState: LogicalState = site ? 'at_site' : previousState;
+    let type: TimelineEventType | null = null;
+    if (!previous.at) { nextState = site ? 'at_site' : 'unknown'; type = 'location_update'; }
+    else if (previousState === 'at_site' && !site) { nextState = 'travelling'; type = 'site_departure'; }
+    else if (previousState !== 'at_site' && site) { nextState = 'at_site'; type = 'site_arrival'; }
+    else if (previousState === 'travelling' && !site && observedAt - (previous.stateStartedAt || previous.at) >= TIMELINE_HEARTBEAT_MS && distance < TIMELINE_MOVEMENT_METERS) { nextState = 'unknown'; type = 'unknown_location'; }
+    const next: State = { attendanceId, siteId, latitude: input.coordinates.latitude, longitude: input.coordinates.longitude, at: observedAt, logicalState: nextState, stateStartedAt: nextState === previousState ? previous.stateStartedAt || observedAt : observedAt };
     if (type) await persistTimelineEvent({ ...input, attendanceId, site, eventType: type }, input.databaseClient);
     else await retryOneTimelineEvent(input.employeeId, input.databaseClient);
+    await saveObservationState(input.employeeId, next);
   } catch (error) { logTimelineFailure('processing', input, error); }
 }
 export async function getLocationTimeline(employeeId: number, from: string, to: string) {
@@ -136,5 +155,34 @@ export async function getLocationTimeline(employeeId: number, from: string, to: 
   const { data: { session } } = await supabase.auth.getSession();
   const client = session ? supabase : await createHeadlessSupabaseClient();
   const result = await client.from('location_timeline').select('*, site:work_sites(name,address)').eq('employee_id', employeeId).gte('event_time', from).lt('event_time', to).order('event_time', { ascending: true });
-  if (result.error) throw result.error; return result.data || [];
+  if (result.error) throw result.error;
+  return buildTimelineSegments(result.data || []);
+}
+
+function segmentState(event: any): TimelineSegment['event_type'] {
+  if (event.event_type === 'check_out' || event.event_type === 'auto_checkout') return event.event_type;
+  if (event.event_type === 'site_departure' || event.event_type === 'movement') return 'travelling';
+  return event.site_id ? 'at_site' : 'unknown_location';
+}
+
+/** Read-only display/export projection of real point events; it never writes timeline data. */
+export function buildTimelineSegments(events: any[]): TimelineSegment[] {
+  const segments: TimelineSegment[] = [];
+  let open: TimelineSegment | null = null;
+  for (const event of events) {
+    const state = segmentState(event);
+    const terminal = state === 'check_out' || state === 'auto_checkout';
+    if (terminal) {
+      if (open) { open.end_time = event.event_time; segments.push(open); open = null; }
+      segments.push({ ...event, id: `terminal:${event.id}`, event_type: state, end_time: null, location_name: state === 'auto_checkout' ? 'Auto Checkout' : 'Checkout' });
+      continue;
+    }
+    const next: TimelineSegment = { ...event, id: `segment:${event.id}`, event_type: state, end_time: null, location_name: state === 'travelling' ? 'Travelling' : event.location_name || 'Unknown Location' };
+    const samePlace = open && open.event_type === next.event_type && (state !== 'at_site' || open.site_id === next.site_id);
+    if (samePlace && open) { open.end_time = event.event_time; continue; }
+    if (open) { open.end_time = event.event_time; segments.push(open); }
+    open = next;
+  }
+  if (open) segments.push(open);
+  return segments;
 }
