@@ -13,7 +13,7 @@ import { isGpsAccurateEnough } from '../utils/geofence';
 import { logger } from '../utils/logger';
 import { employeeApi } from './api';
 import attendanceLocationManager from './attendanceLocationManager';
-import { recordTimelineLocation } from './locationTimelineService';
+import { recordTimelineLocation, retryPendingTimelineEvents } from './locationTimelineService';
 import {
   CONTINUOUS_LOCATION_CONFIGURATION_VERSION,
   CONTINUOUS_LOCATION_INTERVALS,
@@ -442,6 +442,9 @@ const LocationTrackingService = {
         await this.checkOutEmployee();
         return;
       }
+
+      // Best-effort timeline recovery; it is independent from the existing resume flow.
+      void retryPendingTimelineEvents(employeeId);
 
       const siteId = siteIdStr ? parseInt(siteIdStr, 10) : undefined;
 

@@ -11,7 +11,8 @@ export async function savePlatformReportFile(
   document.body.appendChild(anchor);
   anchor.click();
   document.body.removeChild(anchor);
-  URL.revokeObjectURL(objectUrl);
+  // Keep the Blob URL alive long enough for browsers to begin the asynchronous download.
+  setTimeout(() => URL.revokeObjectURL(objectUrl), 1_000);
 
   return `browser-download:${filename}`;
 }

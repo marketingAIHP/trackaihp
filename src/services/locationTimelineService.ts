@@ -1,6 +1,8 @@
 import AsyncStorage from '@react-native-async-storage/async-storage';
-import { supabase } from './supabase';
-import { calculateDistance } from '../utils/geofence';
+import type { SupabaseClient } from '@supabase/supabase-js';
+import { createHeadlessSupabaseClient, supabase } from './supabase';
+import { calculateDistance, checkGeofence } from '../utils/geofence';
+import { CONTINUOUS_LOCATION_STORAGE_KEYS } from './continuousLocationConfig';
 import type { Coordinates, WorkSite } from '../types';
 
 export const TIMELINE_EVENT_TYPES = {
@@ -36,32 +38,25 @@ function isTransientTimelineError(error: any) {
   return status >= 500 || /network|timeout|timed out|failed to fetch|connection|temporar|pgrst00[23]/.test(message);
 }
 
-async function siteFor(employeeId: number, c: Coordinates): Promise<WorkSite | null> {
-  const employee = await supabase.from('employees').select('admin_id').eq('id', employeeId).maybeSingle();
-  if (employee.error || !employee.data?.admin_id) return null;
-  const sites = await supabase.from('work_sites').select('*').eq('admin_id', employee.data.admin_id).eq('is_active', true);
-  if (sites.error) return null;
-  return ((sites.data || []) as WorkSite[])
-    .map(site => ({ site, distance: calculateDistance(c, site) }))
-    .filter(x => x.distance <= x.site.geofence_radius)
-    .sort((a, b) => a.distance - b.distance)[0]?.site || null;
+function siteAtCoordinates(site: WorkSite | null, coordinates: Coordinates) {
+  return site && checkGeofence(coordinates, site).isWithinGeofence ? site : null;
 }
-async function insert(input: TimelineInput) {
+async function insert(input: TimelineInput, databaseClient: SupabaseClient = supabase) {
   const eventTime = input.eventTime || new Date().toISOString();
   const point = input.coordinates ? `${input.coordinates.latitude.toFixed(5)},${input.coordinates.longitude.toFixed(5)}` : 'no-location';
   const row = { employee_id: input.employeeId, attendance_id: input.attendanceId ?? null, event_time: eventTime, latitude: input.coordinates?.latitude ?? null, longitude: input.coordinates?.longitude ?? null, location_name: input.site?.name || 'Unknown location', full_address: input.site?.address ?? null, site_id: input.site?.id ?? null, event_type: input.eventType, accuracy: input.accuracy ?? null, idempotency_key: [input.employeeId, input.attendanceId ?? 'none', input.eventType, eventTime, point].join(':') };
-  const result = await supabase.from('location_timeline').upsert(row, { onConflict: 'idempotency_key', ignoreDuplicates: true });
+  const result = await databaseClient.from('location_timeline').upsert(row, { onConflict: 'idempotency_key', ignoreDuplicates: true });
   if (result.error) throw result.error;
   if (input.coordinates) await AsyncStorage.setItem(stateKey(input.employeeId), JSON.stringify({ attendanceId: input.attendanceId, siteId: row.site_id, latitude: row.latitude, longitude: row.longitude, at: Date.now() })).catch(() => {});
 }
 
-async function retryOneTimelineEvent(employeeId: number) {
+async function retryOneTimelineEvent(employeeId: number, databaseClient: SupabaseClient = supabase) {
   const raw = await AsyncStorage.getItem(retryKey(employeeId));
   const queue: RetryItem[] = raw ? JSON.parse(raw) : [];
   const item = queue[0];
   if (!item) return;
   try {
-    await insert(item.input);
+    await insert(item.input, databaseClient);
     queue.shift();
   } catch (error) {
     logTimelineFailure('retry_insert', item.input, error);
@@ -81,15 +76,15 @@ async function queueRetry(input: TimelineInput) {
   }
 }
 
-async function persistTimelineEvent(input: TimelineInput) {
+async function persistTimelineEvent(input: TimelineInput, databaseClient: SupabaseClient = supabase) {
   const event = { ...input, eventTime: input.eventTime || new Date().toISOString() };
   try {
-    await retryOneTimelineEvent(event.employeeId);
+    await retryOneTimelineEvent(event.employeeId, databaseClient);
   } catch (error) {
     logTimelineFailure('retry_queue', event, error);
   }
   try {
-    await insert(event);
+    await insert(event, databaseClient);
   } catch (error) {
     logTimelineFailure('insert', event, error);
     if (isTransientTimelineError(error)) {
@@ -103,18 +98,43 @@ async function persistTimelineEvent(input: TimelineInput) {
 }
 
 export async function recordTimelineEvent(input: TimelineInput) { await persistTimelineEvent(input); }
-export async function recordTimelineLocation(input: { employeeId: number; attendanceId?: number | null; coordinates: Coordinates; accuracy?: number | null; eventTime?: string; site?: WorkSite | null }) {
+export async function retryPendingTimelineEvents(employeeId: number) {
   try {
-    const raw = await AsyncStorage.getItem(stateKey(input.employeeId)); const previous: State = raw ? JSON.parse(raw) : {};
-    const site = input.site === undefined ? await siteFor(input.employeeId, input.coordinates) : input.site;
+    await retryOneTimelineEvent(employeeId);
+  } catch (error) {
+    logTimelineFailure('resume_retry', { employeeId }, error);
+  }
+}
+export async function recordTimelineLocation(input: { employeeId: number; attendanceId?: number | null; coordinates: Coordinates; accuracy?: number | null; eventTime?: string; site?: WorkSite | null; databaseClient?: SupabaseClient }) {
+  try {
+    const [raw, storedAttendanceId, storedSite] = await Promise.all([
+      AsyncStorage.getItem(stateKey(input.employeeId)),
+      AsyncStorage.getItem(CONTINUOUS_LOCATION_STORAGE_KEYS.attendanceId),
+      input.site === undefined ? AsyncStorage.getItem(CONTINUOUS_LOCATION_STORAGE_KEYS.siteContext) : Promise.resolve(null),
+    ]);
+    const previous: State = raw ? JSON.parse(raw) : {};
+    const attendanceId = input.attendanceId ?? (storedAttendanceId && Number.isFinite(Number(storedAttendanceId)) ? Number(storedAttendanceId) : undefined);
+    if (attendanceId == null) {
+      console.warn('[LocationTimeline] tracking context unavailable', { stage: 'attendance_context', employee_id: input.employeeId, gps_timestamp: input.eventTime ?? null });
+    }
+    let persistedSite: WorkSite | null = null;
+    if (input.site === undefined && storedSite) {
+      try { persistedSite = JSON.parse(storedSite) as WorkSite; } catch { console.warn('[LocationTimeline] tracking context unavailable', { stage: 'site_context', employee_id: input.employeeId, gps_timestamp: input.eventTime ?? null }); }
+    }
+    const site = input.site === undefined ? siteAtCoordinates(persistedSite, input.coordinates) : siteAtCoordinates(input.site, input.coordinates);
     const siteId = site?.id ?? null;
     const distance = previous.latitude == null || previous.longitude == null ? Infinity : calculateDistance(input.coordinates, { latitude: previous.latitude, longitude: previous.longitude });
     const type: TimelineEventType = !previous.at ? 'location_update' : previous.siteId !== undefined && previous.siteId !== siteId ? (siteId == null ? 'site_departure' : 'site_arrival') : distance >= TIMELINE_MOVEMENT_METERS ? 'movement' : Date.now() - previous.at >= TIMELINE_HEARTBEAT_MS ? 'location_update' : null as any;
-    if (type) await persistTimelineEvent({ ...input, site, eventType: type });
-    else await retryOneTimelineEvent(input.employeeId);
+    if (type) await persistTimelineEvent({ ...input, attendanceId, site, eventType: type }, input.databaseClient);
+    else await retryOneTimelineEvent(input.employeeId, input.databaseClient);
   } catch (error) { logTimelineFailure('processing', input, error); }
 }
 export async function getLocationTimeline(employeeId: number, from: string, to: string) {
-  const result = await supabase.from('location_timeline').select('*, site:work_sites(name,address)').eq('employee_id', employeeId).gte('event_time', from).lt('event_time', to).order('event_time', { ascending: true });
+  // On web the app's custom auth state can be ready before Supabase restores its
+  // persisted session. Use the stored access token in that case so RLS evaluates
+  // this report as the signed-in admin rather than as the anonymous role.
+  const { data: { session } } = await supabase.auth.getSession();
+  const client = session ? supabase : await createHeadlessSupabaseClient();
+  const result = await client.from('location_timeline').select('*, site:work_sites(name,address)').eq('employee_id', employeeId).gte('event_time', from).lt('event_time', to).order('event_time', { ascending: true });
   if (result.error) throw result.error; return result.data || [];
 }

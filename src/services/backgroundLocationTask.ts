@@ -201,7 +201,7 @@ TaskManager.defineTask(BACKGROUND_LOCATION_TASK, async ({ data, error }) => {
 
                 if (response.success) {
                     markLocationSent(coords.latitude, coords.longitude, gpsTimestamp);
-                    void recordTimelineLocation({ employeeId: parseInt(employeeId, 10), coordinates: { latitude: coords.latitude, longitude: coords.longitude }, accuracy: coords.accuracy ?? null, eventTime: timestampIso });
+                    void recordTimelineLocation({ employeeId: parseInt(employeeId, 10), coordinates: { latitude: coords.latitude, longitude: coords.longitude }, accuracy: coords.accuracy ?? null, eventTime: timestampIso, databaseClient: headlessSupabase });
                     console.log('[ContinuousLocation] updateLiveLocation completed');
                 } else {
                     console.warn('[ContinuousLocation] location upload failed', {
