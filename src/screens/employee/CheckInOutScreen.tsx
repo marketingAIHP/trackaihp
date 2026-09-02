@@ -495,7 +495,12 @@ export const CheckInOutScreen: React.FC = () => {
       throw new Error(response.error || 'Check-out failed');
     },
     onSuccess: async (attendance, payload) => {
-      void recordTimelineEvent({ employeeId, attendanceId: attendance.id, eventType: 'check_out', coordinates: payload.snapshot.coordinates, accuracy: payload.snapshot.accuracy, eventTime: attendance.check_out_time, site: payload.detectedSite?.site || attendance.site });
+      // Auto checkout is captured by the database observer. Do not add a
+      // second terminal when a late manual tap returns an already auto-closed
+      // attendance record.
+      if (attendance.checkout_type !== 'auto_checkout') {
+        void recordTimelineEvent({ employeeId, attendanceId: attendance.id, eventType: 'check_out', coordinates: payload.snapshot.coordinates, accuracy: payload.snapshot.accuracy, eventTime: attendance.check_out_time, site: payload.detectedSite?.site || attendance.site });
+      }
       await LocationTrackingService.checkOutEmployee();
       await invalidateAttendance();
       Alert.alert(

@@ -12,7 +12,9 @@ export type TimelineReportMeta = { employeeName: string; reportType: 'Daily' | '
 const eventLabel = (value: string) => value.split('_').map((part) => part.charAt(0).toUpperCase() + part.slice(1)).join(' ');
 const employeeName = (row: TimelineReportRow) => [row.employee?.first_name, row.employee?.last_name].filter(Boolean).join(' ');
 const duration = (row: TimelineReportRow) => {
-  if (!row.end_time) return row.event_type === 'check_out' || row.event_type === 'auto_checkout' ? '' : 'Ongoing';
+  // An absent final observation is not evidence that a past attendance session
+  // is still active. Preserve the underlying null end time as a neutral value.
+  if (!row.end_time) return '';
   const ms = Math.max(0, new Date(row.end_time).getTime() - new Date(row.event_time).getTime());
   return `${Math.floor(ms / 3600000)}h ${String(Math.floor(ms / 60000) % 60).padStart(2, '0')}m`;
 };
@@ -21,7 +23,7 @@ const locationName = (row: TimelineReportRow) => isNonLocationState(row) ? '-' :
 const siteName = (row: TimelineReportRow) => isNonLocationState(row) ? '-' : (row.site?.name || '-');
 const value = (row: TimelineReportRow, key: string) => {
   const values: Record<string, string> = {
-    Date: formatDate(row.event_time), 'Start Time': formatTime(row.event_time), 'End Time': row.end_time ? formatTime(row.end_time) : '', Duration: duration(row), Status: eventLabel(row.event_type),
+    Date: formatDate(row.event_time), 'Start Time': formatTime(row.event_time), 'End Time': row.end_time ? formatTime(row.end_time) : '-', Duration: duration(row) || '-', Status: eventLabel(row.event_type),
     'Location Name': locationName(row), 'Full Address': row.full_address || row.site?.address || '',
     'Site Name': siteName(row), Accuracy: row.accuracy == null ? '' : String(row.accuracy),
     'Attendance ID': row.attendance_id == null ? '' : String(row.attendance_id),
@@ -40,7 +42,9 @@ export function buildTimelineReportCsv(rows: TimelineReportRow[]) {
   return [headers.join(','), ...rows.map((row) => headers.map((header) => csvEscape(value(row, header))).join(','))].join('\n');
 }
 
-const pdfEscape = (text: string) => text.replace(/\\/g, '\\\\').replace(/\(/g, '\\(').replace(/\)/g, '\\)');
+// The hand-built PDF uses Type1 Helvetica and string-length-based xref offsets.
+// Keep stream text ASCII so UTF-8 multi-byte characters cannot corrupt offsets.
+const pdfEscape = (text: string) => String(text).replace(/[–—]/g, '-').replace(/[^\x20-\x7E]/g, '?').replace(/\\/g, '\\\\').replace(/\(/g, '\\(').replace(/\)/g, '\\)');
 const text = (value: string, x: number, y: number, size = 8, bold = false) => `BT /${bold ? 'F2' : 'F1'} ${size} Tf 0 0 0 rg ${x.toFixed(2)} ${y.toFixed(2)} Td (${pdfEscape(value)}) Tj ET\n`;
 const line = (x1: number, y1: number, x2: number, y2: number, width = 0.5) => `${width} w ${x1} ${y1} m ${x2} ${y2} l S\n`;
 const rect = (x: number, y: number, width: number, height: number, fill?: [number, number, number]) => `${fill ? `${fill.join(' ')} rg ` : ''}0 0 0 RG 0.5 w ${x} ${y} ${width} ${height} re ${fill ? 'B' : 'S'}\n`;
@@ -72,15 +76,29 @@ export function buildTimelineReportPdf(rows: TimelineReportRow[], meta: Timeline
     const cells = columns.map((header, i) => wrap(value(row, header), widths[i] - padding * 2, fontSize));
     return { cells, lines: Math.max(...cells.map((cell) => cell.length)), shaded: false };
   });
-  type Segment = { layout: number; start: number; count: number };
+  type Segment = { kind: 'row'; layout: number; start: number; count: number } | { kind: 'day'; label: string };
+  const daySectionHeight = 18;
   const pages: Segment[][] = [[]]; let pageIndex = 0, cursor = firstTableTop - headerHeight;
+  let currentDay = '';
   layouts.forEach((layout, layoutIndex) => {
+    const nextDay = formatDate(rows[layoutIndex].event_time);
+    if (nextDay !== currentDay) {
+      // Each calendar day begins a separate table section with its own column
+      // header. Reserve one data line too, so no day title is left stranded.
+      let needsSectionHeader = pages[pageIndex].length > 0;
+      const sectionHeight = daySectionHeight + (needsSectionHeader ? headerHeight : 0);
+      if (cursor - sectionHeight - lineHeight - padding * 2 < bottom) { pages.push([]); pageIndex++; cursor = continuationTableTop - headerHeight; needsSectionHeader = false; }
+      pages[pageIndex].push({ kind: 'day', label: nextDay });
+      cursor -= daySectionHeight;
+      if (needsSectionHeader) cursor -= headerHeight;
+      currentDay = nextDay;
+    }
     let start = 0;
     while (start < layout.lines) {
       const available = Math.floor((cursor - bottom - padding * 2) / lineHeight);
       if (available < 1) { pages.push([]); pageIndex++; cursor = continuationTableTop - headerHeight; continue; }
       const count = Math.min(layout.lines - start, available);
-      pages[pageIndex].push({ layout: layoutIndex, start, count });
+      pages[pageIndex].push({ kind: 'row', layout: layoutIndex, start, count });
       cursor -= count * lineHeight + padding * 2; start += count;
       if (start < layout.lines) { pages.push([]); pageIndex++; cursor = continuationTableTop - headerHeight; }
     }
@@ -98,10 +116,23 @@ export function buildTimelineReportPdf(rows: TimelineReportRow[], meta: Timeline
       out += line(margin, 464, pageWidth - margin, 464, 1);
     }
     let y = (isFirstPage ? firstTableTop : continuationTableTop); let x = margin;
-    out += rect(margin, y - headerHeight, usableWidth, headerHeight, [0.89, 0.93, 0.97]);
-    columns.forEach((header, i) => { let ly = y - padding - headerSize; wrap(header, widths[i] - padding * 2, headerSize).forEach((part) => { out += text(part, x + padding, ly, headerSize, true); ly -= 10; }); x += widths[i]; });
-    y -= headerHeight;
+    let hasColumnHeader = false;
+    const drawColumnHeader = () => {
+      out += rect(margin, y - headerHeight, usableWidth, headerHeight, [0.89, 0.93, 0.97]);
+      x = margin;
+      columns.forEach((header, i) => { let ly = y - padding - headerSize; wrap(header, widths[i] - padding * 2, headerSize).forEach((part) => { out += text(part, x + padding, ly, headerSize, true); ly -= 10; }); x += widths[i]; });
+      y -= headerHeight;
+      hasColumnHeader = true;
+    };
     segments.forEach((segment) => {
+      if (segment.kind === 'day') {
+        out += rect(margin, y - daySectionHeight, usableWidth, daySectionHeight, [0.94, 0.96, 0.98]);
+        out += text(segment.label, margin + padding, y - 12, 8, true);
+        y -= daySectionHeight;
+        drawColumnHeader();
+        return;
+      }
+      if (!hasColumnHeader) drawColumnHeader();
       const layout = layouts[segment.layout], height = segment.count * lineHeight + padding * 2; x = margin;
       out += rect(margin, y - height, usableWidth, height, segment.layout % 2 === 0 ? [0.988, 0.992, 0.996] : undefined);
       layout.cells.forEach((cell, columnIndex) => { let ly = y - padding - fontSize; cell.slice(segment.start, segment.start + segment.count).forEach((part) => { out += text(part, x + padding, ly, fontSize); ly -= lineHeight; }); out += line(x, y, x, y - height); x += widths[columnIndex]; });

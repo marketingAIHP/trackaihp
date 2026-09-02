@@ -13,6 +13,10 @@ export const TIMELINE_EVENT_TYPES = {
 export type TimelineEventType = keyof typeof TIMELINE_EVENT_TYPES;
 export const TIMELINE_HEARTBEAT_MS = 5 * 60 * 1000;
 export const TIMELINE_MOVEMENT_METERS = 75;
+// GPS fixes close to overlapping work-site geofences can alternate between
+// sites for a single observation.  This is used only by the read-only report
+// projection; tracking and stored timeline points remain untouched.
+const REPORT_SITE_STABILITY_MS = 5 * 60 * 1000;
 const stateKey = (id: number) => `@timeline:last:${id}`;
 const retryKey = (id: number) => `@timeline:retry:${id}`;
 const MAX_RETRY_ATTEMPTS = 3;
@@ -53,7 +57,11 @@ async function saveObservationState(employeeId: number, state: State) {
 }
 async function insert(input: TimelineInput, databaseClient: SupabaseClient = supabase) {
   const eventTime = input.eventTime || new Date().toISOString();
-  const point = input.coordinates ? `${input.coordinates.latitude.toFixed(5)},${input.coordinates.longitude.toFixed(5)}` : 'no-location';
+  const terminal = input.eventType === 'check_out' || input.eventType === 'auto_checkout';
+  // A checkout is a single attendance boundary, regardless of which observer
+  // supplied the location snapshot. GPS coordinates must not make terminals
+  // non-idempotent.
+  const point = terminal ? 'terminal' : input.coordinates ? `${input.coordinates.latitude.toFixed(5)},${input.coordinates.longitude.toFixed(5)}` : 'no-location';
   const row = { employee_id: input.employeeId, attendance_id: input.attendanceId ?? null, event_time: eventTime, latitude: input.coordinates?.latitude ?? null, longitude: input.coordinates?.longitude ?? null, location_name: input.site?.name || 'Unknown location', full_address: input.site?.address ?? null, site_id: input.site?.id ?? null, event_type: input.eventType, accuracy: input.accuracy ?? null, idempotency_key: [input.employeeId, input.attendanceId ?? 'none', input.eventType, eventTime, point].join(':') };
   const result = await databaseClient.from('location_timeline').upsert(row, { onConflict: 'idempotency_key', ignoreDuplicates: true });
   if (result.error) throw result.error;
@@ -126,6 +134,25 @@ export async function recordTimelineLocation(input: { employeeId: number; attend
     const attendanceId = input.attendanceId ?? (storedAttendanceId && Number.isFinite(Number(storedAttendanceId)) ? Number(storedAttendanceId) : undefined);
     if (attendanceId == null) {
       console.warn('[LocationTimeline] tracking context unavailable', { stage: 'attendance_context', employee_id: input.employeeId, gps_timestamp: input.eventTime ?? null });
+      return;
+    }
+    // AsyncStorage can outlive an automatic checkout briefly. Verify the
+    // session before writing a historical observation so a closed attendance
+    // cannot receive a post-checkout timeline event. A buffered GPS fix from
+    // before checkout is still accepted using its original timestamp.
+    const eventTime = input.eventTime || new Date().toISOString();
+    const { data: attendance, error: attendanceError } = await (input.databaseClient || supabase)
+      .from('attendance')
+      .select('check_in_time, check_out_time')
+      .eq('id', attendanceId)
+      .eq('employee_id', input.employeeId)
+      .maybeSingle();
+    const eventAt = Date.parse(eventTime);
+    const checkInAt = Date.parse(attendance?.check_in_time || '');
+    const checkOutAt = attendance?.check_out_time ? Date.parse(attendance.check_out_time) : null;
+    if (attendanceError || !attendance || !Number.isFinite(eventAt) || (Number.isFinite(checkInAt) && eventAt < checkInAt) || (checkOutAt != null && Number.isFinite(checkOutAt) && eventAt > checkOutAt)) {
+      console.warn('[LocationTimeline] ignored observation outside attendance boundary', { employee_id: input.employeeId, attendance_id: attendanceId, gps_timestamp: eventTime, reason: attendanceError ? 'attendance_lookup_failed' : 'closed_or_invalid_session' });
+      return;
     }
     let persistedSite: WorkSite | null = null;
     if (input.site === undefined && storedSite) {
@@ -133,7 +160,7 @@ export async function recordTimelineLocation(input: { employeeId: number; attend
     }
     const site = input.site === undefined ? siteAtCoordinates(persistedSite, input.coordinates) : siteAtCoordinates(input.site, input.coordinates);
     const siteId = site?.id ?? null;
-    const observedAt = input.eventTime ? Date.parse(input.eventTime) : Date.now();
+    const observedAt = Date.parse(eventTime);
     const previousState: LogicalState = previous.logicalState || (previous.siteId ? 'at_site' : 'unknown');
     const distance = previous.latitude == null || previous.longitude == null ? Infinity : calculateDistance(input.coordinates, { latitude: previous.latitude, longitude: previous.longitude });
     let nextState: LogicalState = site ? 'at_site' : previousState;
@@ -196,7 +223,9 @@ export function buildTimelineSegments(events: any[]): TimelineSegment[] {
       location_name: state === 'travelling' ? '' : event.location_name || 'Unknown Location',
     };
     const samePlace = open && open.event_type === next.event_type && (state !== 'at_site' || open.site_id === next.site_id);
-    if (samePlace && open) { open.end_time = event.event_time; continue; }
+    const rapidSiteFlip = open && state === 'at_site' && open.event_type === 'at_site' && open.site_id !== next.site_id &&
+      new Date(event.event_time).getTime() - new Date(open.event_time).getTime() < REPORT_SITE_STABILITY_MS;
+    if ((samePlace || rapidSiteFlip) && open) { open.end_time = event.event_time; continue; }
     if (open) { open.end_time = event.event_time; segments.push(open); }
     open = next;
   }
