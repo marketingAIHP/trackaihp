@@ -10,7 +10,6 @@ export type TimelineReportRow = {
 export type TimelineReportMeta = { employeeName: string; reportType: 'Daily' | 'Weekly' | 'Monthly'; dateRange: string; generatedOn: string; generatedBy: string; };
 
 const eventLabel = (value: string) => value.split('_').map((part) => part.charAt(0).toUpperCase() + part.slice(1)).join(' ');
-const employeeName = (row: TimelineReportRow) => [row.employee?.first_name, row.employee?.last_name].filter(Boolean).join(' ');
 const duration = (row: TimelineReportRow) => {
   // An absent final observation is not evidence that a past attendance session
   // is still active. Preserve the underlying null end time as a neutral value.
@@ -80,18 +79,26 @@ export function buildTimelineReportPdf(rows: TimelineReportRow[], meta: Timeline
   const daySectionHeight = 18;
   const pages: Segment[][] = [[]]; let pageIndex = 0, cursor = firstTableTop - headerHeight;
   let currentDay = '';
+  let currentAttendanceId: number | null | undefined;
+  let sessionNumber = 0;
   layouts.forEach((layout, layoutIndex) => {
     const nextDay = formatDate(rows[layoutIndex].event_time);
-    if (nextDay !== currentDay) {
+    const nextAttendanceId = rows[layoutIndex].attendance_id;
+    const newSession = nextAttendanceId !== currentAttendanceId;
+    if (nextDay !== currentDay || newSession) {
       // Each calendar day begins a separate table section with its own column
-      // header. Reserve one data line too, so no day title is left stranded.
+      // header. An attendance boundary does too: main and overtime must never
+      // appear as one continuous report session. Reserve one data line so a
+      // section title is never left stranded.
       let needsSectionHeader = pages[pageIndex].length > 0;
       const sectionHeight = daySectionHeight + (needsSectionHeader ? headerHeight : 0);
       if (cursor - sectionHeight - lineHeight - padding * 2 < bottom) { pages.push([]); pageIndex++; cursor = continuationTableTop - headerHeight; needsSectionHeader = false; }
-      pages[pageIndex].push({ kind: 'day', label: nextDay });
+      if (newSession) sessionNumber += 1;
+      pages[pageIndex].push({ kind: 'day', label: `${nextDay}${newSession ? ` - Session ${sessionNumber}` : ''}` });
       cursor -= daySectionHeight;
       if (needsSectionHeader) cursor -= headerHeight;
       currentDay = nextDay;
+      currentAttendanceId = nextAttendanceId;
     }
     let start = 0;
     while (start < layout.lines) {
