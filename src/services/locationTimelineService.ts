@@ -55,8 +55,42 @@ function siteAtCoordinates(site: WorkSite | null, coordinates: Coordinates) {
 async function saveObservationState(employeeId: number, state: State) {
   await AsyncStorage.setItem(stateKey(employeeId), JSON.stringify(state)).catch(() => {});
 }
+
+/**
+ * The attendance record is the sole authority for a timeline session.  This
+ * guard also runs for retry-queue writes, which otherwise do not pass through
+ * recordTimelineLocation's active-attendance lookup.
+ */
+async function assertTimelineAttendanceBoundary(input: TimelineInput, eventTime: string, databaseClient: SupabaseClient) {
+  if (input.attendanceId == null) throw new Error('Timeline event is missing its attendance session');
+  const { data: attendance, error } = await databaseClient
+    .from('attendance')
+    .select('employee_id, check_in_time, check_out_time, checkout_type')
+    .eq('id', input.attendanceId)
+    .maybeSingle();
+  if (error || !attendance || attendance.employee_id !== input.employeeId) {
+    throw new Error('Timeline attendance session is unavailable');
+  }
+  const eventAt = Date.parse(eventTime);
+  const checkInAt = Date.parse(attendance.check_in_time);
+  const checkOutAt = attendance.check_out_time ? Date.parse(attendance.check_out_time) : null;
+  if (!Number.isFinite(eventAt) || !Number.isFinite(checkInAt) || eventAt < checkInAt) {
+    throw new Error('Timeline event is outside its attendance start boundary');
+  }
+  const terminal = input.eventType === 'check_out' || input.eventType === 'auto_checkout';
+  if (terminal) {
+    const expectedType = attendance.checkout_type === 'auto_checkout' ? 'auto_checkout' : 'check_out';
+    if (checkOutAt == null || eventAt !== checkOutAt || input.eventType !== expectedType) {
+      throw new Error('Timeline terminal event does not match the attendance checkout');
+    }
+  } else if (checkOutAt != null && eventAt >= checkOutAt) {
+    throw new Error('Timeline event is after its attendance checkout boundary');
+  }
+}
+
 async function insert(input: TimelineInput, databaseClient: SupabaseClient = supabase) {
   const eventTime = input.eventTime || new Date().toISOString();
+  await assertTimelineAttendanceBoundary(input, eventTime, databaseClient);
   const terminal = input.eventType === 'check_out' || input.eventType === 'auto_checkout';
   // A checkout is a single attendance boundary, regardless of which observer
   // supplied the location snapshot. GPS coordinates must not make terminals

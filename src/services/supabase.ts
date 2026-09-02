@@ -2,6 +2,7 @@ import {createClient} from '@supabase/supabase-js';
 import {env, envMessages, safeEnv} from '../config/env';
 import AsyncStorage from '@react-native-async-storage/async-storage';
 import { fetch as expoFetch } from 'expo/fetch';
+import { Platform } from 'react-native';
 
 // =============================================================================
 // PERFORMANCE OPTIMIZATION: Supabase Client Configuration
@@ -116,7 +117,9 @@ export async function createHeadlessSupabaseClient() {
       },
       // Expo's native transport continues operating in Android headless tasks,
       // where React Native's global fetch can remain unresolved indefinitely.
-      fetch: expoFetch as typeof globalThis.fetch,
+      // In a browser it is important to use the browser fetch implementation:
+      // it preserves the authenticated request behavior used by Supabase.
+      fetch: (Platform.OS === 'web' ? globalThis.fetch : expoFetch) as typeof globalThis.fetch,
     },
     db: { schema: 'public' },
   });
