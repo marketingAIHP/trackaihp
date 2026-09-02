@@ -172,12 +172,29 @@ export function buildTimelineSegments(events: any[]): TimelineSegment[] {
   for (const event of events) {
     const state = segmentState(event);
     const terminal = state === 'check_out' || state === 'auto_checkout';
+
+    // An attendance id is a hard session boundary.  This is a read-only
+    // projection rule: it prevents report rows from joining two real sessions
+    // (including across midnight) without changing historical observations.
+    if (open && open.attendance_id !== event.attendance_id) {
+      segments.push(open);
+      open = null;
+    }
+
     if (terminal) {
       if (open) { open.end_time = event.event_time; segments.push(open); open = null; }
-      segments.push({ ...event, id: `terminal:${event.id}`, event_type: state, end_time: null, location_name: state === 'auto_checkout' ? 'Auto Checkout' : 'Checkout' });
+      segments.push({ ...event, id: `terminal:${event.id}`, event_type: state, end_time: null, location_name: '' });
       continue;
     }
-    const next: TimelineSegment = { ...event, id: `segment:${event.id}`, event_type: state, end_time: null, location_name: state === 'travelling' ? 'Travelling' : event.location_name || 'Unknown Location' };
+    const next: TimelineSegment = {
+      ...event,
+      id: `segment:${event.id}`,
+      event_type: state,
+      end_time: null,
+      // Status labels are not physical locations. Keep them out of the
+      // location field while retaining Unknown Location as a valid state.
+      location_name: state === 'travelling' ? '' : event.location_name || 'Unknown Location',
+    };
     const samePlace = open && open.event_type === next.event_type && (state !== 'at_site' || open.site_id === next.site_id);
     if (samePlace && open) { open.end_time = event.event_time; continue; }
     if (open) { open.end_time = event.event_time; segments.push(open); }

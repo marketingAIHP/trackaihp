@@ -16,18 +16,24 @@ const duration = (row: TimelineReportRow) => {
   const ms = Math.max(0, new Date(row.end_time).getTime() - new Date(row.event_time).getTime());
   return `${Math.floor(ms / 3600000)}h ${String(Math.floor(ms / 60000) % 60).padStart(2, '0')}m`;
 };
+const isNonLocationState = (row: TimelineReportRow) => row.event_type === 'travelling' || row.event_type === 'check_out' || row.event_type === 'auto_checkout';
+const locationName = (row: TimelineReportRow) => isNonLocationState(row) ? '-' : (row.location_name || 'Unknown Location');
+const siteName = (row: TimelineReportRow) => isNonLocationState(row) ? '-' : (row.site?.name || '-');
 const value = (row: TimelineReportRow, key: string) => {
   const values: Record<string, string> = {
     Date: formatDate(row.event_time), 'Start Time': formatTime(row.event_time), 'End Time': row.end_time ? formatTime(row.end_time) : '', Duration: duration(row), Status: eventLabel(row.event_type),
-    'Location Name': row.location_name || '', 'Full Address': row.full_address || row.site?.address || '',
-    'Site Name': row.site?.name || '', Accuracy: row.accuracy == null ? '' : String(row.accuracy),
+    'Location Name': locationName(row), 'Full Address': row.full_address || row.site?.address || '',
+    'Site Name': siteName(row), Accuracy: row.accuracy == null ? '' : String(row.accuracy),
     'Attendance ID': row.attendance_id == null ? '' : String(row.attendance_id),
     'Checkout Type': row.event_type === 'auto_checkout' ? 'Auto Checkout' : row.event_type === 'check_out' ? 'Manual Checkout' : '',
     'Created At': row.created_at || '',
   };
   return values[key] || '';
 };
+// CSV retains its existing useful non-coordinate detail. The PDF uses the
+// focused employee-facing projection below.
 const headers = ['Date', 'Start Time', 'End Time', 'Duration', 'Status', 'Location Name', 'Full Address', 'Site Name', 'Accuracy', 'Attendance ID', 'Checkout Type'];
+const pdfHeaders = ['Date', 'Start Time', 'End Time', 'Duration', 'Status', 'Location Name', 'Site Name', 'Checkout Type'];
 const csvEscape = (text: string) => `"${text.replace(/"/g, '""')}"`;
 
 export function buildTimelineReportCsv(rows: TimelineReportRow[]) {
@@ -54,8 +60,8 @@ const wrap = (input: string, width: number, size = 7) => {
 };
 
 export function buildTimelineReportPdf(rows: TimelineReportRow[], meta: TimelineReportMeta) {
-  const columns = headers;
-  const weights: Record<string, number> = { Date: 1, 'Start Time': 0.9, 'End Time': 0.9, Duration: 0.8, Status: 1.05, 'Location Name': 1.35, 'Full Address': 2.2, 'Site Name': 1.2, Accuracy: 0.75, 'Attendance ID': 0.9, 'Checkout Type': 1.1 };
+  const columns = pdfHeaders;
+  const weights: Record<string, number> = { Date: 1, 'Start Time': 0.9, 'End Time': 0.9, Duration: 0.8, Status: 1.05, 'Location Name': 1.5, 'Site Name': 1.4, 'Checkout Type': 1.15 };
   const pageWidth = 792, pageHeight = 612, margin = 24, footerHeight = 24, fontSize = 7, headerSize = 7.5, lineHeight = 10, padding = 3;
   const usableWidth = pageWidth - margin * 2, totalWeight = columns.reduce((sum, header) => sum + (weights[header] || 1), 0);
   const widths = columns.map((header) => usableWidth * (weights[header] || 1) / totalWeight);
