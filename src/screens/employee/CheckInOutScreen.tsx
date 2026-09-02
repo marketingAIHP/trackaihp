@@ -23,7 +23,6 @@ import {
 } from '../../utils/geofence';
 import { formatDistance } from '../../utils/format';
 import LocationTrackingService from '../../services/LocationTrackingService';
-import { recordTimelineEvent } from '../../services/locationTimelineService';
 
 const IST_TIME_ZONE = 'Asia/Kolkata';
 const HALF_DAY_SECONDS = 4.5 * 60 * 60;
@@ -453,7 +452,9 @@ export const CheckInOutScreen: React.FC = () => {
       throw new Error(response.error || 'Check-in failed');
     },
     onSuccess: async (attendance, payload) => {
-      void recordTimelineEvent({ employeeId, attendanceId: attendance.id, eventType: 'check_in', coordinates: { latitude: attendance.check_in_latitude ?? payload.snapshot.coordinates.latitude, longitude: attendance.check_in_longitude ?? payload.snapshot.coordinates.longitude }, accuracy: payload.snapshot.accuracy, eventTime: attendance.check_in_time, site: payload.detectedSite?.site || attendance.site });
+      // Attendance database observers record the check-in boundary. Keeping it
+      // server-side prevents a foreground callback from being the only source
+      // of timeline history.
       const siteId = attendance.site_id || profile?.site_id || undefined;
       const trackingResult = await LocationTrackingService.checkInEmployee(
         employeeId,
@@ -495,12 +496,8 @@ export const CheckInOutScreen: React.FC = () => {
       throw new Error(response.error || 'Check-out failed');
     },
     onSuccess: async (attendance, payload) => {
-      // Auto checkout is captured by the database observer. Do not add a
-      // second terminal when a late manual tap returns an already auto-closed
-      // attendance record.
-      if (attendance.checkout_type !== 'auto_checkout') {
-        void recordTimelineEvent({ employeeId, attendanceId: attendance.id, eventType: 'check_out', coordinates: payload.snapshot.coordinates, accuracy: payload.snapshot.accuracy, eventTime: attendance.check_out_time, site: payload.detectedSite?.site || attendance.site });
-      }
+      // Manual and auto checkout terminals are captured by database observers.
+      // A late tap on an already closed attendance cannot add a second one.
       await LocationTrackingService.checkOutEmployee();
       await invalidateAttendance();
       Alert.alert(

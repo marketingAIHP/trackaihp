@@ -217,7 +217,45 @@ export async function getLocationTimeline(employeeId: number, from: string, to: 
   const client = session ? supabase : await createHeadlessSupabaseClient();
   const result = await client.from('location_timeline').select('*, site:work_sites(name,address)').eq('employee_id', employeeId).gte('event_time', from).lt('event_time', to).order('event_time', { ascending: true });
   if (result.error) throw result.error;
-  return buildTimelineSegments(result.data || []);
+  if (result.data?.length) return buildTimelineSegments(result.data);
+
+  // Timeline recording was introduced after attendance already existed in
+  // production.  For those historical sessions, use the real attendance
+  // boundaries as a minimal read-only report projection rather than claiming
+  // that the employee had no events at all. New sessions are captured by the
+  // database observers below and will use location_timeline directly.
+  const attendanceResult = await client
+    .from('attendance')
+    .select('id, employee_id, site_id, check_in_time, check_out_time, check_in_latitude, check_in_longitude, check_in_location_name, check_out_latitude, check_out_longitude, check_out_location_name, checkout_type, site:work_sites(name,address)')
+    .eq('employee_id', employeeId)
+    .lt('check_in_time', to)
+    .or(`check_out_time.is.null,check_out_time.gt.${from}`)
+    .order('check_in_time', { ascending: true });
+  if (attendanceResult.error) throw attendanceResult.error;
+  const rangeStart = Date.parse(from), rangeEnd = Date.parse(to);
+  const fallbackEvents = (attendanceResult.data || []).flatMap((attendance: any) => {
+    const events: any[] = [];
+    const checkInAt = Date.parse(attendance.check_in_time);
+    if (checkInAt >= rangeStart && checkInAt < rangeEnd) {
+      events.push({
+        id: `attendance-check-in:${attendance.id}`, employee_id: attendance.employee_id, attendance_id: attendance.id,
+        event_time: attendance.check_in_time, latitude: attendance.check_in_latitude, longitude: attendance.check_in_longitude,
+        location_name: attendance.check_in_location_name || attendance.site?.name || 'Unknown location', full_address: attendance.site?.address || null,
+        site_id: attendance.site_id, site: attendance.site, event_type: 'check_in', created_at: attendance.check_in_time,
+      });
+    }
+    const checkOutAt = attendance.check_out_time ? Date.parse(attendance.check_out_time) : NaN;
+    if (Number.isFinite(checkOutAt) && checkOutAt >= rangeStart && checkOutAt < rangeEnd) {
+      events.push({
+        id: `attendance-check-out:${attendance.id}`, employee_id: attendance.employee_id, attendance_id: attendance.id,
+        event_time: attendance.check_out_time, latitude: attendance.check_out_latitude, longitude: attendance.check_out_longitude,
+        location_name: '', full_address: null, site_id: null, site: null,
+        event_type: attendance.checkout_type === 'auto_checkout' ? 'auto_checkout' : 'check_out', created_at: attendance.check_out_time,
+      });
+    }
+    return events;
+  });
+  return buildTimelineSegments(fallbackEvents);
 }
 
 function segmentState(event: any): TimelineSegment['event_type'] {

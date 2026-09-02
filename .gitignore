@@ -89,6 +89,7 @@ sql.md
 !supabase/migrations/202608040002_fix_notification_deadline_type_compatibility.sql
 !supabase/migrations/202608050001_fix_future_auto_checkout_timestamp_storage.sql
 !supabase/migrations/202609020001_enforce_location_timeline_attendance_boundaries.sql
+!supabase/migrations/202609020002_capture_attendance_timeline_boundaries.sql
 !EAS_DEPLOYMENT.md
 
 # Testing
