@@ -63,11 +63,12 @@ const wrap = (input: string, width: number, size = 7) => {
 };
 
 export function buildTimelineReportPdf(rows: TimelineReportRow[], meta: TimelineReportMeta) {
-  // Attendance IDs remain on the rows but are deliberately not used for PDF
-  // grouping. The report is one chronological table for its selected period.
+  // Attendance IDs remain separate in the data, but each calendar day is one
+  // presentation table: main shift and overtime rows stay chronological under
+  // the same date and never receive session headings.
   const orderedRows = [...rows].sort((a, b) => new Date(a.event_time).getTime() - new Date(b.event_time).getTime());
-  const columns = pdfHeaders;
-  const weights: Record<string, number> = { Date: 1, 'Start Time': 0.9, 'End Time': 0.9, Duration: 0.8, Status: 1.05, 'Location Name': 1.5, 'Site Name': 1.4, 'Checkout Type': 1.15 };
+  const columns = pdfHeaders.filter((header) => header !== 'Date');
+  const weights: Record<string, number> = { 'Start Time': 0.9, 'End Time': 0.9, Duration: 0.8, Status: 1.05, 'Location Name': 1.5, 'Site Name': 1.4, 'Checkout Type': 1.15 };
   const pageWidth = 792, pageHeight = 612, margin = 24, footerHeight = 24, fontSize = 7, headerSize = 7.5, lineHeight = 10, padding = 3;
   const usableWidth = pageWidth - margin * 2, totalWeight = columns.reduce((sum, header) => sum + (weights[header] || 1), 0);
   const widths = columns.map((header) => usableWidth * (weights[header] || 1) / totalWeight);
@@ -78,15 +79,28 @@ export function buildTimelineReportPdf(rows: TimelineReportRow[], meta: Timeline
     const cells = columns.map((header, i) => wrap(value(row, header), widths[i] - padding * 2, fontSize));
     return { cells, lines: Math.max(...cells.map((cell) => cell.length)), shaded: false };
   });
-  type Segment = { layout: number; start: number; count: number };
-  const pages: Segment[][] = [[]]; let pageIndex = 0, cursor = firstTableTop - headerHeight;
+  type Segment = { kind: 'day'; label: string } | { kind: 'row'; layout: number; start: number; count: number };
+  const daySectionHeight = 18;
+  const pages: Segment[][] = [[]]; let pageIndex = 0, cursor = firstTableTop;
+  let currentDay = '';
   layouts.forEach((layout, layoutIndex) => {
+    const nextDay = formatDate(orderedRows[layoutIndex].event_time);
+    if (nextDay !== currentDay) {
+      // A date begins one logical table. Reserve its heading, table header,
+      // and a data line so the heading is never stranded at a page bottom.
+      if (cursor - daySectionHeight - headerHeight - lineHeight - padding * 2 < bottom) {
+        pages.push([]); pageIndex++; cursor = continuationTableTop;
+      }
+      pages[pageIndex].push({ kind: 'day', label: nextDay });
+      cursor -= daySectionHeight + headerHeight;
+      currentDay = nextDay;
+    }
     let start = 0;
     while (start < layout.lines) {
       const available = Math.floor((cursor - bottom - padding * 2) / lineHeight);
       if (available < 1) { pages.push([]); pageIndex++; cursor = continuationTableTop - headerHeight; continue; }
       const count = Math.min(layout.lines - start, available);
-      pages[pageIndex].push({ layout: layoutIndex, start, count });
+      pages[pageIndex].push({ kind: 'row', layout: layoutIndex, start, count });
       cursor -= count * lineHeight + padding * 2; start += count;
       if (start < layout.lines) { pages.push([]); pageIndex++; cursor = continuationTableTop - headerHeight; }
     }
@@ -105,14 +119,24 @@ export function buildTimelineReportPdf(rows: TimelineReportRow[], meta: Timeline
       out += line(margin, 452, pageWidth - margin, 452, 1);
     }
     let y = (isFirstPage ? firstTableTop : continuationTableTop); let x = margin;
+    let hasTableHeader = false;
     const drawColumnHeader = () => {
       out += rect(margin, y - headerHeight, usableWidth, headerHeight, [0.89, 0.93, 0.97]);
       x = margin;
       columns.forEach((header, i) => { let ly = y - padding - headerSize; wrap(header, widths[i] - padding * 2, headerSize).forEach((part) => { out += text(part, x + padding, ly, headerSize, true); ly -= 10; }); x += widths[i]; });
       y -= headerHeight;
+      hasTableHeader = true;
     };
-    drawColumnHeader();
     segments.forEach((segment) => {
+      if (segment.kind === 'day') {
+        out += rect(margin, y - daySectionHeight, usableWidth, daySectionHeight, [0.94, 0.96, 0.98]);
+        out += text(segment.label, margin + padding, y - 12, 8, true);
+        y -= daySectionHeight;
+        drawColumnHeader();
+        return;
+      }
+      // When a day table flows to another page, repeat only its columns.
+      if (!hasTableHeader) drawColumnHeader();
       const layout = layouts[segment.layout], height = segment.count * lineHeight + padding * 2; x = margin;
       out += rect(margin, y - height, usableWidth, height, segment.layout % 2 === 0 ? [0.988, 0.992, 0.996] : undefined);
       layout.cells.forEach((cell, columnIndex) => { let ly = y - padding - fontSize; cell.slice(segment.start, segment.start + segment.count).forEach((part) => { out += text(part, x + padding, ly, fontSize); ly -= lineHeight; }); out += line(x, y, x, y - height); x += widths[columnIndex]; });

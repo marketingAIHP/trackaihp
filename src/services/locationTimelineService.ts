@@ -1,7 +1,7 @@
 import AsyncStorage from '@react-native-async-storage/async-storage';
 import type { SupabaseClient } from '@supabase/supabase-js';
 import { createHeadlessSupabaseClient, supabase } from './supabase';
-import { calculateDistance, checkGeofence } from '../utils/geofence';
+import { calculateDistance, findNearestSiteWithinGeofence } from '../utils/geofence';
 import { CONTINUOUS_LOCATION_STORAGE_KEYS } from './continuousLocationConfig';
 import type { Coordinates, WorkSite } from '../types';
 
@@ -49,8 +49,16 @@ function isTransientTimelineError(error: any) {
   return status >= 500 || /network|timeout|timed out|failed to fetch|connection|temporar|pgrst00[23]/.test(message);
 }
 
-function siteAtCoordinates(site: WorkSite | null, coordinates: Coordinates) {
-  return site && checkGeofence(coordinates, site).isWithinGeofence ? site : null;
+async function detectTimelineSite(coordinates: Coordinates, databaseClient: SupabaseClient): Promise<WorkSite | null> {
+  // Do not use the attendance/check-in site as a location fallback. A timeline
+  // observation must be classified from its own GPS coordinates so departures
+  // and arrivals at another site remain visible in historical reports.
+  const { data: sites, error } = await databaseClient
+    .from('work_sites')
+    .select('id, name, address, latitude, longitude, geofence_radius, admin_id, is_active')
+    .eq('is_active', true);
+  if (error) throw error;
+  return findNearestSiteWithinGeofence(coordinates, (sites || []) as WorkSite[])?.site || null;
 }
 async function saveObservationState(employeeId: number, state: State) {
   await AsyncStorage.setItem(stateKey(employeeId), JSON.stringify(state)).catch(() => {});
@@ -159,10 +167,9 @@ export async function retryPendingTimelineEvents(employeeId: number) {
 }
 export async function recordTimelineLocation(input: { employeeId: number; attendanceId?: number | null; coordinates: Coordinates; accuracy?: number | null; eventTime?: string; site?: WorkSite | null; databaseClient?: SupabaseClient }) {
   try {
-    const [raw, storedAttendanceId, storedSite] = await Promise.all([
+    const [raw, storedAttendanceId] = await Promise.all([
       AsyncStorage.getItem(stateKey(input.employeeId)),
       AsyncStorage.getItem(CONTINUOUS_LOCATION_STORAGE_KEYS.attendanceId),
-      input.site === undefined ? AsyncStorage.getItem(CONTINUOUS_LOCATION_STORAGE_KEYS.siteContext) : Promise.resolve(null),
     ]);
     const previous: State = raw ? JSON.parse(raw) : {};
     const attendanceId = input.attendanceId ?? (storedAttendanceId && Number.isFinite(Number(storedAttendanceId)) ? Number(storedAttendanceId) : undefined);
@@ -188,11 +195,7 @@ export async function recordTimelineLocation(input: { employeeId: number; attend
       console.warn('[LocationTimeline] ignored observation outside attendance boundary', { employee_id: input.employeeId, attendance_id: attendanceId, gps_timestamp: eventTime, reason: attendanceError ? 'attendance_lookup_failed' : 'closed_or_invalid_session' });
       return;
     }
-    let persistedSite: WorkSite | null = null;
-    if (input.site === undefined && storedSite) {
-      try { persistedSite = JSON.parse(storedSite) as WorkSite; } catch { console.warn('[LocationTimeline] tracking context unavailable', { stage: 'site_context', employee_id: input.employeeId, gps_timestamp: input.eventTime ?? null }); }
-    }
-    const site = input.site === undefined ? siteAtCoordinates(persistedSite, input.coordinates) : siteAtCoordinates(input.site, input.coordinates);
+    const site = await detectTimelineSite(input.coordinates, input.databaseClient || supabase);
     const siteId = site?.id ?? null;
     const observedAt = Date.parse(eventTime);
     const previousState: LogicalState = previous.logicalState || (previous.siteId ? 'at_site' : 'unknown');
@@ -204,6 +207,13 @@ export async function recordTimelineLocation(input: { employeeId: number; attend
     else if (previousState !== 'at_site' && site) { nextState = 'at_site'; type = 'site_arrival'; }
     else if (previousState === 'travelling' && !site && observedAt - (previous.stateStartedAt || previous.at) >= TIMELINE_HEARTBEAT_MS && distance < TIMELINE_MOVEMENT_METERS) { nextState = 'unknown'; type = 'unknown_location'; }
     const next: State = { attendanceId, siteId, latitude: input.coordinates.latitude, longitude: input.coordinates.longitude, at: observedAt, logicalState: nextState, stateStartedAt: nextState === previousState ? previous.stateStartedAt || observedAt : observedAt };
+    console.log('[LocationTimeline] observation decision', {
+      employeeId: input.employeeId, attendanceId, gpsTimestamp: eventTime,
+      latitude: input.coordinates.latitude, longitude: input.coordinates.longitude,
+      accuracy: input.accuracy ?? null, detectedSite: site ? { id: site.id, name: site.name } : null,
+      previousState, newState: nextState, eventType: type, decision: type ? 'ACCEPT' : 'CONSOLIDATE',
+      reason: type === 'site_departure' ? 'left_detected_site' : type === 'site_arrival' ? 'entered_detected_site' : type === 'unknown_location' ? 'stationary_outside_known_sites' : type === 'location_update' ? 'first_observation' : 'same_logical_state',
+    });
     if (type) await persistTimelineEvent({ ...input, attendanceId, site, eventType: type }, input.databaseClient);
     else await retryOneTimelineEvent(input.employeeId, input.databaseClient);
     await saveObservationState(input.employeeId, next);
