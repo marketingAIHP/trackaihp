@@ -11,6 +11,9 @@ export const CONTINUOUS_LOCATION_INTERVALS = {
 export const CONTINUOUS_LOCATION_STORAGE_KEYS = {
   isTracking: '@LocSvc:isTracking',
   employeeId: '@LocSvc:employeeId',
+  // Retained after checkout only to identify delayed GPS batches. The timeline
+  // service still validates every fix against its actual attendance interval.
+  timelineEmployeeId: '@timeline:employeeId',
   attendanceId: '@LocSvc:attendanceId',
   siteId: '@LocSvc:siteId',
   siteContext: '@LocSvc:siteContext',

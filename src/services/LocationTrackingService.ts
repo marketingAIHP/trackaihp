@@ -206,7 +206,8 @@ async function sendLocation(
   latitude: number,
   longitude: number,
   employeeId: number,
-  siteId?: number
+  siteId?: number,
+  gpsTimestamp?: number
 ): Promise<void> {
   if (isSendingForegroundLocation) {
     return;
@@ -215,7 +216,7 @@ async function sendLocation(
   isSendingForegroundLocation = true;
 
   try {
-    const eventTime = new Date().toISOString();
+    const eventTime = gpsTimestamp == null ? undefined : new Date(gpsTimestamp).toISOString();
     const result = await employeeApi.updateLiveLocation(
       employeeId,
       { latitude, longitude },
@@ -225,8 +226,6 @@ async function sendLocation(
 
     if (result.success) {
       recordSent(latitude, longitude);
-      // Historical persistence is an observer only; it must not affect the live upload.
-      void recordTimelineLocation({ employeeId, coordinates: { latitude, longitude }, eventTime });
       await AsyncStorage.removeItem(STORAGE_KEYS.LAST_ERROR);
       await log('✅ Location sent');
       return;
@@ -268,11 +267,15 @@ async function startForegroundFeed(employeeId: number, siteId?: number): Promise
       lastObservedLocationTimestamp = snapshot.timestamp;
       const { latitude, longitude } = snapshot.coordinates;
 
+      // Persist every delivered fix, including stationary fixes and callbacks
+      // received while a live upload is in flight.
+      void recordTimelineLocation({ employeeId, coordinates: snapshot.coordinates, accuracy: snapshot.accuracy, eventTime: new Date(snapshot.timestamp).toISOString(), source: 'foreground' });
+
       if (shouldSkipUpdate(latitude, longitude)) {
         return;
       }
 
-      void sendLocation(latitude, longitude, employeeId, siteId);
+      void sendLocation(latitude, longitude, employeeId, siteId, snapshot.timestamp);
     }
   );
 
@@ -343,10 +346,13 @@ const LocationTrackingService = {
       }
 
       await AsyncStorage.setItem(STORAGE_KEYS.EMPLOYEE_ID, employeeId.toString());
+      await AsyncStorage.setItem(CONTINUOUS_LOCATION_STORAGE_KEYS.timelineEmployeeId, employeeId.toString());
       await AsyncStorage.setItem(STORAGE_KEYS.IS_TRACKING, 'true');
 
       if (attendanceId) {
         await AsyncStorage.setItem(STORAGE_KEYS.ATTENDANCE_ID, attendanceId.toString());
+      } else {
+        await AsyncStorage.removeItem(STORAGE_KEYS.ATTENDANCE_ID);
       }
 
       if (siteId) {
@@ -409,6 +415,8 @@ const LocationTrackingService = {
   async resumeTrackingIfNeeded(expectedEmployeeId?: number): Promise<void> {
     try {
       await this._cleanupLegacyTaskIfRunning();
+      // Recovery also runs after checkout, when live tracking is no longer active.
+      if (expectedEmployeeId) void retryPendingTimelineEvents(expectedEmployeeId);
 
       const [isTracking, employeeIdStr, siteIdStr] = await Promise.all([
         AsyncStorage.getItem(STORAGE_KEYS.IS_TRACKING),
@@ -490,11 +498,14 @@ const LocationTrackingService = {
         return;
       }
 
+      await recordTimelineLocation({ employeeId, coordinates: snapshot.coordinates, accuracy: snapshot.accuracy, eventTime: new Date(snapshot.timestamp).toISOString(), source: 'foreground_snapshot' });
+
       await sendLocation(
         snapshot.coordinates.latitude,
         snapshot.coordinates.longitude,
         employeeId,
-        siteId
+        siteId,
+        snapshot.timestamp
       );
     } catch (error: any) {
       await log(`❌ Force update error: ${error?.message || 'Unknown error'}`);

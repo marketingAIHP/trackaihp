@@ -18,7 +18,7 @@ import type { WorkSite } from '../types';
 import { employeeApi } from './api';
 import { createHeadlessSupabaseClient } from './supabase';
 import AsyncStorage from '@react-native-async-storage/async-storage';
-import { recordTimelineLocation } from './locationTimelineService';
+import { recordTimelineLocation, retryPendingTimelineEvents } from './locationTimelineService';
 import {
     CONTINUOUS_LOCATION_INTERVALS,
     CONTINUOUS_LOCATION_STORAGE_KEYS,
@@ -54,12 +54,8 @@ let isBackgroundUploadInFlight = false;
 let backgroundUploadStartedAt = 0;
 
 /**
- * Background Location Task (GPS COLLECTION ONLY)
- *
- * SAFEGUARDS:
- * 1. NO network calls allowed here.
- * 2. Return immediately after updating local state.
- * 3. Fast execution to avoid Android OS penalties.
+ * Persist every batched GPS fix before applying the separate live-state
+ * cooldown. Await persistence so Headless JS does not finish mid-write.
  */
 TaskManager.defineTask(BACKGROUND_LOCATION_TASK, async ({ data, error }) => {
     console.log('[ContinuousLocation] task invoked');
@@ -76,6 +72,29 @@ TaskManager.defineTask(BACKGROUND_LOCATION_TASK, async ({ data, error }) => {
 
     try {
         console.log('[ContinuousLocation] task event count', locations.length);
+        const employeeIdForTimeline = await AsyncStorage.getItem(CONTINUOUS_LOCATION_STORAGE_KEYS.employeeId)
+            || await AsyncStorage.getItem(CONTINUOUS_LOCATION_STORAGE_KEYS.timelineEmployeeId);
+        if (employeeIdForTimeline) {
+            // This client is used only for timeline work; failures must not stop
+            // the existing live upload. Buffered pre-checkout fixes remain valid.
+            let timelineClient;
+            try { timelineClient = await createHeadlessSupabaseClient(); }
+            catch (error: any) {
+                console.warn('[LocationTimeline] headless authentication unavailable', { error: error?.message });
+            }
+            for (const fix of [...locations].sort((a, b) => a.timestamp - b.timestamp)) {
+                await recordTimelineLocation({
+                    employeeId: Number(employeeIdForTimeline),
+                    coordinates: { latitude: fix.coords?.latitude, longitude: fix.coords?.longitude },
+                    accuracy: fix.coords?.accuracy ?? null,
+                    eventTime: Number.isFinite(fix.timestamp) ? new Date(fix.timestamp).toISOString() : '',
+                    source: 'background', databaseClient: timelineClient, deferUpload: true,
+                });
+            }
+            if (timelineClient) await retryPendingTimelineEvents(Number(employeeIdForTimeline), timelineClient);
+        } else {
+            console.warn('[LocationTimeline] background observations rejected', { storageDecision: 'REJECTED', storageReason: 'NO_EMPLOYEE_CONTEXT', observations: locations.length });
+        }
         // Android may batch fixes; always process the newest fix.
         const latest = locations.reduce((newest, candidate) =>
             (candidate?.timestamp || 0) > (newest?.timestamp || 0) ? candidate : newest,
@@ -201,7 +220,6 @@ TaskManager.defineTask(BACKGROUND_LOCATION_TASK, async ({ data, error }) => {
 
                 if (response.success) {
                     markLocationSent(coords.latitude, coords.longitude, gpsTimestamp);
-                    void recordTimelineLocation({ employeeId: parseInt(employeeId, 10), coordinates: { latitude: coords.latitude, longitude: coords.longitude }, accuracy: coords.accuracy ?? null, eventTime: timestampIso, databaseClient: headlessSupabase });
                     console.log('[ContinuousLocation] updateLiveLocation completed');
                 } else {
                     console.warn('[ContinuousLocation] location upload failed', {

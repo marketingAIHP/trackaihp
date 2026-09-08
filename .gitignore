@@ -100,3 +100,9 @@ coverage/
 *.aab
 *.ipa
 .vercel
+!supabase/migrations/202609080001_repair_timeline_observation_boundaries.sql
+# Local diagnostic evidence contains employee GPS; keep it out of source control.
+/tmp/
+/output/
+/supabase/.temp/
+!LOCATION_TIMELINE_AUDIT.md
