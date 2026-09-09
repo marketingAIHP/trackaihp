@@ -57,6 +57,15 @@ test('network failures retain more than three fixes across more than three retri
  const f=fixture();f.offline(true);for(let i=1;i<=8;i++)await f.observe(i);for(let i=0;i<5;i++)await f.service.retryPendingTimelineEvents(36);
  assert.equal([...f.values.keys()].filter(k=>k.includes('pending:v2')).length,8);f.offline(false);await f.service.retryPendingTimelineEvents(36);assert.equal(f.rows.length,8);assert.equal(f.values.size,0);
 });
+test('a historical backlog does not starve a current attendance fix',async()=>{
+ const f=fixture();f.offline(true);
+ for(let i=0;i<80;i++)await f.observe(i/100);
+ await f.observe(75,undefined,{attendanceId:2});
+ f.offline(false);await f.service.retryPendingTimelineEvents(36);
+ assert.equal(f.rows.length,50);
+ assert.ok(f.rows.some(row=>row.attendance_id===2&&row.event_time===time(75)));
+ assert.ok(f.values.size>0,'unprocessed historical fixes remain durable');
+});
 test('concurrent foreground/background queue writes do not evict distinct fixes',async()=>{
  const f=fixture();await Promise.all(Array.from({length:12},(_,i)=>f.observe(i+1,undefined,{deferUpload:true})));assert.equal(f.values.size,12);await f.service.retryPendingTimelineEvents(36);assert.equal(f.rows.length,12);
 });
@@ -77,4 +86,20 @@ test('projection orders a late GPS fix at checkout before one terminal and never
  const f=fixture();const base={employee_id:36,attendance_id:1,created_at:time(60)};
  const rows=[{...base,id:1,event_time:time(60),event_type:'check_out'},{...base,id:2,event_time:time(60),event_type:'location_update',site_id:1,location_name:'Site A'},{...base,id:3,event_time:time(61),event_type:'location_update',site_id:1},{...base,id:4,event_time:time(60),event_type:'check_out'}];
  const s=f.service.buildTimelineSegments(rows);assert.equal(s.length,2);assert.equal(s[0].event_type,'at_site');assert.equal(s[0].end_time,time(60));assert.equal(s[1].event_type,'check_out');
+});
+
+test('authoritative projection excludes orphan, post-checkout, and mismatched terminal rows',()=>{
+ const f=fixture(); const attendance=[{id:1,employee_id:36,check_in_time:time(0),check_out_time:time(60),checkout_type:'manual_checkout'}];
+ const base={employee_id:36,created_at:time(0)};
+ const rows=[
+  {...base,id:1,attendance_id:null,event_time:time(1),event_type:'movement'},
+  {...base,id:2,attendance_id:999,event_time:time(2),event_type:'auto_checkout'},
+  {...base,id:3,attendance_id:1,event_time:time(10),event_type:'location_update',site_id:1,location_name:'Site A'},
+  {...base,id:4,attendance_id:1,event_time:time(60),event_type:'auto_checkout'},
+  {...base,id:5,attendance_id:1,event_time:time(60),event_type:'check_out'},
+  {...base,id:6,attendance_id:1,event_time:time(61),event_type:'movement'},
+ ];
+ const result=f.service.buildTimelineSegments(rows,attendance);
+ assert.deepEqual(result.map(row=>row.event_type),['at_site','check_out']);
+ assert.equal(result[0].end_time,time(60));
 });

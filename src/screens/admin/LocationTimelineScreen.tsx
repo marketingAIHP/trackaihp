@@ -7,20 +7,13 @@ import { useAuth } from '../../hooks/useAuth';
 import { adminApi } from '../../services/api';
 import { getLocationTimeline } from '../../services/locationTimelineService';
 import { formatDate, formatTime } from '../../utils/format';
+import { timelineReportRange } from '../../services/reports/timelineReportRange';
 
 type Period = 'daily' | 'weekly' | 'monthly';
 const label = (value: string) => value.split('_').map((part) => part[0].toUpperCase() + part.slice(1)).join(' ');
 
 function rangeFor(period: Period, date: string) {
-  const local = new Date(`${date}T00:00:00`);
-  if (period === 'weekly') local.setDate(local.getDate() - ((local.getDay() + 6) % 7));
-  if (period === 'monthly') local.setDate(1);
-  const start = new Date(local);
-  const end = new Date(start);
-  if (period === 'daily') end.setDate(end.getDate() + 1);
-  if (period === 'weekly') end.setDate(end.getDate() + 7);
-  if (period === 'monthly') end.setMonth(end.getMonth() + 1);
-  return { from: start.toISOString(), to: end.toISOString() };
+  return timelineReportRange(period, date);
 }
 
 export const LocationTimelineScreen: React.FC = () => {

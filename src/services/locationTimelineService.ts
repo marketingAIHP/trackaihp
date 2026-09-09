@@ -22,6 +22,10 @@ export type TimelineSegment = {
   location_name: string; full_address?: string | null; site_id?: number | null; latitude?: number | null;
   longitude?: number | null; accuracy?: number | null; created_at: string;
 };
+type AttendanceBoundary = {
+  id: number; employee_id: number; check_in_time: string; check_out_time?: string | null;
+  checkout_type?: string | null;
+};
 
 // One durable key per fix avoids read/modify/write queue races between headless
 // and foreground runtimes. Failed observations are never evicted after N retries.
@@ -157,8 +161,13 @@ async function drain(employeeId: number, client: SupabaseClient) {
   const keys = (await AsyncStorage.getAllKeys()).filter(key => key.startsWith(pendingPrefix(employeeId)));
   const entries = (await AsyncStorage.multiGet(keys)).flatMap(([key, raw]) => raw ? [{ key, item: JSON.parse(raw) as Pending }] : []);
   entries.sort((a, b) => Date.parse(a.item.input.eventTime!) - Date.parse(b.item.input.eventTime!));
-  // Bound each headless invocation; untouched entries remain durable.
-  for (const { key, item } of entries.slice(0, 50)) {
+  // Bound each headless invocation. Recover the oldest history while also
+  // admitting current-session fixes so a large historical backlog cannot
+  // starve today's attendance. Untouched entries remain durable.
+  const batch = entries.length <= 50
+    ? entries
+    : [...entries.slice(0, 25), ...entries.slice(-25)];
+  for (const { key, item } of batch) {
     if (!await processPending(key, item, client)) break;
   }
   if (entries.length > 50) logTimelineDiagnostic({ employeeId }, 'QUEUED', 'RETRY_BACKLOG', { remaining: entries.length - 50 });
@@ -206,9 +215,22 @@ export async function getLocationTimeline(employeeId: number, from: string, to: 
     events.push(...(result.data || []));
     if (!result.data || result.data.length < 1000) break;
   }
+  const attendanceIds = [...new Set(events.map(event => event.attendance_id).filter((id): id is number => Number.isFinite(id)))];
+  const attendance: AttendanceBoundary[] = [];
+  // PostgREST URLs have practical size limits. Load only referenced sessions in
+  // bounded chunks; this makes the report projection authoritative without
+  // changing or repairing historical rows.
+  for (let offset = 0; offset < attendanceIds.length; offset += 200) {
+    const result = await client.from('attendance')
+      .select('id, employee_id, check_in_time, check_out_time, checkout_type')
+      .eq('employee_id', employeeId)
+      .in('id', attendanceIds.slice(offset, offset + 200));
+    if (result.error) throw result.error;
+    attendance.push(...((result.data || []) as AttendanceBoundary[]));
+  }
   // Attendance-only fallback made an empty/unauthorized history read look like
   // nine hours of continuous tracking. Report only persistent timeline events.
-  return buildTimelineSegments(events);
+  return buildTimelineSegments(events, attendance);
 }
 
 function segmentState(event: any): TimelineSegment['event_type'] {
@@ -218,13 +240,27 @@ function segmentState(event: any): TimelineSegment['event_type'] {
 }
 
 /** Read-only display/export projection of real point events; it never writes timeline data. */
-export function buildTimelineSegments(events: any[]): TimelineSegment[] {
+export function buildTimelineSegments(events: any[], attendance?: AttendanceBoundary[]): TimelineSegment[] {
   const segments: TimelineSegment[] = [];
   let open: TimelineSegment | null = null;
   const ordered = [...events].sort((a, b) => Date.parse(a.event_time) - Date.parse(b.event_time) ||
     Number(a.event_type === 'check_out' || a.event_type === 'auto_checkout') - Number(b.event_type === 'check_out' || b.event_type === 'auto_checkout'));
   const closed = new Set<number>();
+  const boundaries = attendance ? new Map(attendance.map(row => [row.id, row])) : null;
   for (const event of ordered) {
+    const eventAt = Date.parse(event.event_time);
+    if (!Number.isFinite(eventAt) || event.attendance_id == null) continue;
+    if (boundaries) {
+      const boundary = boundaries.get(event.attendance_id);
+      if (!boundary || boundary.employee_id !== event.employee_id) continue;
+      const checkInAt = Date.parse(boundary.check_in_time);
+      const checkoutAt = boundary.check_out_time ? Date.parse(boundary.check_out_time) : null;
+      if (!Number.isFinite(checkInAt) || eventAt < checkInAt || (checkoutAt != null && eventAt > checkoutAt)) continue;
+      if (event.event_type === 'check_out' || event.event_type === 'auto_checkout') {
+        const expected = boundary.checkout_type === 'auto_checkout' ? 'auto_checkout' : 'check_out';
+        if (checkoutAt == null || eventAt !== checkoutAt || event.event_type !== expected) continue;
+      }
+    }
     if (event.attendance_id != null && closed.has(event.attendance_id)) continue;
     const state = segmentState(event);
     const terminal = state === 'check_out' || state === 'auto_checkout';
@@ -239,7 +275,11 @@ export function buildTimelineSegments(events: any[]): TimelineSegment[] {
 
     if (terminal) {
       if (event.attendance_id != null) closed.add(event.attendance_id);
-      if (open) { open.end_time = event.event_time; segments.push(open); open = null; }
+      if (open) {
+        open.end_time = event.event_time;
+        if (Date.parse(open.end_time!) > Date.parse(open.event_time) || open.event_type === 'at_site' || open.event_type === 'unknown_location') segments.push(open);
+        open = null;
+      }
       segments.push({ ...event, id: `terminal:${event.id}`, event_type: state, end_time: null, location_name: '' });
       continue;
     }
@@ -256,7 +296,11 @@ export function buildTimelineSegments(events: any[]): TimelineSegment[] {
     const rapidSiteFlip = open && state === 'at_site' && open.event_type === 'at_site' && open.site_id !== next.site_id &&
       new Date(event.event_time).getTime() - new Date(open.event_time).getTime() < REPORT_SITE_STABILITY_MS;
     if ((samePlace || rapidSiteFlip) && open) { open.end_time = event.event_time; continue; }
-    if (open) { open.end_time = event.event_time; segments.push(open); }
+    if (open) {
+      open.end_time = event.event_time;
+      // A zero-duration route is noise, not evidence of travel.
+      if (Date.parse(open.end_time!) > Date.parse(open.event_time) || open.event_type !== 'travelling') segments.push(open);
+    }
     open = next;
   }
   if (open) segments.push(open);

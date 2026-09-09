@@ -9,13 +9,14 @@ import { getLocationTimeline } from '../../services/locationTimelineService';
 import { savePlatformReportFile } from '../../services/reportDownloader';
 import { buildTimelineReportCsv, buildTimelineReportPdf, TimelineReportRow } from '../../services/reports/timelineExportBuilders';
 import { formatDate, formatDateTime } from '../../utils/format';
+import { timelineReportRange } from '../../services/reports/timelineReportRange';
 
 type Period = 'daily' | 'weekly' | 'monthly';
 const dateString = (date: Date) => {
   const local = new Date(date.getTime() - date.getTimezoneOffset() * 60000);
   return local.toISOString().slice(0, 10);
 };
-function rangeFor(period: Period, value: string) { const start = new Date(`${value}T00:00:00`); if (period === 'weekly') start.setDate(start.getDate() - ((start.getDay() + 6) % 7)); if (period === 'monthly') start.setDate(1); const end = new Date(start); if (period === 'daily') end.setDate(end.getDate() + 1); else if (period === 'weekly') end.setDate(end.getDate() + 7); else end.setMonth(end.getMonth() + 1); return { start, end, from: start.toISOString(), to: end.toISOString() }; }
+const rangeFor = timelineReportRange;
 function weekToken(date: Date) { const copy = new Date(Date.UTC(date.getFullYear(), date.getMonth(), date.getDate())); copy.setUTCDate(copy.getUTCDate() + 4 - (copy.getUTCDay() || 7)); const year = copy.getUTCFullYear(); const first = new Date(Date.UTC(year, 0, 1)); return `${year}-W${String(Math.ceil((((copy.getTime() - first.getTime()) / 86400000) + 1) / 7)).padStart(2, '0')}`; }
 const safeName = (value: string) => value.replace(/[^a-z0-9]+/gi, '_').replace(/^_|_$/g, '');
 const monthStart = (value: string) => { const day = new Date(`${value}T00:00:00`); return new Date(day.getFullYear(), day.getMonth(), 1); };

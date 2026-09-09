@@ -27,7 +27,7 @@
     "publish:dev": "eas update --channel development --environment development",
     "update:production": "eas update --channel production --environment production",
     "update:staging": "eas update --channel staging --environment preview",
-    "test:timeline": "node --test tests/location-timeline.test.cjs tests/location-tracking-paths.test.cjs"
+    "test:timeline": "node --test tests/location-timeline.test.cjs tests/location-tracking-paths.test.cjs tests/timeline-report-range.test.cjs"
   },
   "dependencies": {
     "@expo/vector-icons": "^15.0.3",

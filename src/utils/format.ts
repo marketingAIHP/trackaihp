@@ -29,6 +29,7 @@ export function parseTimestamp(date: string | Date | null | undefined): Date {
 export function formatDate(date: string | Date): string {
   const d = parseTimestamp(date);
   return d.toLocaleDateString('en-IN', {
+    timeZone: 'Asia/Kolkata',
     year: 'numeric',
     month: 'short',
     day: 'numeric',
@@ -42,6 +43,7 @@ export function formatDate(date: string | Date): string {
 export function formatTime(date: string | Date): string {
   const d = parseTimestamp(date);
   return d.toLocaleTimeString('en-IN', {
+    timeZone: 'Asia/Kolkata',
     hour: '2-digit',
     minute: '2-digit',
     hour12: true,
@@ -55,6 +57,7 @@ export function formatTime(date: string | Date): string {
 export function formatDateTime(date: string | Date): string {
   const d = parseTimestamp(date);
   return d.toLocaleString('en-IN', {
+    timeZone: 'Asia/Kolkata',
     year: 'numeric',
     month: 'short',
     day: 'numeric',
@@ -136,4 +139,3 @@ export function formatDistance(meters: number): string {
   }
   return `${(meters / 1000).toFixed(2)}km`;
 }
-
