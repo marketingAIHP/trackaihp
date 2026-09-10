@@ -228,9 +228,12 @@ export async function getLocationTimeline(employeeId: number, from: string, to: 
     if (result.error) throw result.error;
     attendance.push(...((result.data || []) as AttendanceBoundary[]));
   }
-  // Attendance-only fallback made an empty/unauthorized history read look like
-  // nine hours of continuous tracking. Report only persistent timeline events.
-  return buildTimelineSegments(events, attendance);
+  // Some deployed admin policies expose location_timeline but not the matching
+  // attendance rows. Treating that visibility mismatch as authoritative used
+  // to discard every real event and produce a misleading zero-row export.
+  // Validate against attendance whenever at least one boundary is visible;
+  // otherwise retain the persistent timeline projection itself.
+  return buildTimelineSegments(events, attendanceIds.length > 0 && attendance.length === 0 ? undefined : attendance);
 }
 
 function segmentState(event: any): TimelineSegment['event_type'] {

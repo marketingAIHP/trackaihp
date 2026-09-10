@@ -88,6 +88,14 @@ test('projection orders a late GPS fix at checkout before one terminal and never
  const s=f.service.buildTimelineSegments(rows);assert.equal(s.length,2);assert.equal(s[0].event_type,'at_site');assert.equal(s[0].end_time,time(60));assert.equal(s[1].event_type,'check_out');
 });
 
+test('report keeps persistent timeline rows when admin cannot read attendance boundaries',async()=>{
+ const f=fixture();
+ f.rows.push({id:1,employee_id:36,attendance_id:999,event_time:time(10),event_type:'location_update',site_id:1,location_name:'Site A'});
+ const segments=await f.service.getLocationTimeline(36,time(0),time(60));
+ assert.equal(segments.length,1);
+ assert.equal(segments[0].location_name,'Site A');
+});
+
 test('authoritative projection excludes orphan, post-checkout, and mismatched terminal rows',()=>{
  const f=fixture(); const attendance=[{id:1,employee_id:36,check_in_time:time(0),check_out_time:time(60),checkout_type:'manual_checkout'}];
  const base={employee_id:36,created_at:time(0)};
