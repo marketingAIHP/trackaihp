@@ -233,7 +233,7 @@ export async function getLocationTimeline(employeeId: number, from: string, to: 
   // to discard every real event and produce a misleading zero-row export.
   // Validate against attendance whenever at least one boundary is visible;
   // otherwise retain the persistent timeline projection itself.
-  return buildTimelineSegments(events, attendanceIds.length > 0 && attendance.length === 0 ? undefined : attendance);
+  return buildTimelineSegments(events, attendance.length === 0 ? undefined : attendance);
 }
 
 function segmentState(event: any): TimelineSegment['event_type'] {
@@ -252,7 +252,7 @@ export function buildTimelineSegments(events: any[], attendance?: AttendanceBoun
   const boundaries = attendance ? new Map(attendance.map(row => [row.id, row])) : null;
   for (const event of ordered) {
     const eventAt = Date.parse(event.event_time);
-    if (!Number.isFinite(eventAt) || event.attendance_id == null) continue;
+    if (!Number.isFinite(eventAt) || (boundaries && event.attendance_id == null)) continue;
     if (boundaries) {
       const boundary = boundaries.get(event.attendance_id);
       if (!boundary || boundary.employee_id !== event.employee_id) continue;
