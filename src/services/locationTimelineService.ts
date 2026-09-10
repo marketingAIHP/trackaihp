@@ -215,6 +215,39 @@ export async function getLocationTimeline(employeeId: number, from: string, to: 
     events.push(...(result.data || []));
     if (!result.data || result.data.length < 1000) break;
   }
+  // Older employee builds did not persist location_timeline observations, but
+  // their real attendance boundaries are still available. Match the APK's
+  // read-only compatibility behavior only when no timeline events exist.
+  if (events.length === 0) {
+    const result = await client.from('attendance')
+      .select('id, employee_id, site_id, check_in_time, check_out_time, check_in_latitude, check_in_longitude, check_in_location_name, check_out_latitude, check_out_longitude, check_out_location_name, checkout_type, site:work_sites(name,address)')
+      .eq('employee_id', employeeId)
+      .lt('check_in_time', to)
+      .or(`check_out_time.is.null,check_out_time.gt.${from}`)
+      .order('check_in_time', { ascending: true });
+    if (result.error) throw result.error;
+    const rangeStart = Date.parse(from), rangeEnd = Date.parse(to);
+    const fallbackEvents = (result.data || []).flatMap((attendance: any) => {
+      const rows: any[] = [];
+      const checkInAt = Date.parse(attendance.check_in_time);
+      if (checkInAt >= rangeStart && checkInAt < rangeEnd) rows.push({
+        id: `attendance-check-in:${attendance.id}`, employee_id: attendance.employee_id, attendance_id: attendance.id,
+        event_time: attendance.check_in_time, latitude: attendance.check_in_latitude, longitude: attendance.check_in_longitude,
+        location_name: attendance.check_in_location_name || attendance.site?.name || 'Unknown Location',
+        full_address: attendance.site?.address || null, site_id: attendance.site_id, site: attendance.site,
+        event_type: 'check_in', created_at: attendance.check_in_time,
+      });
+      const checkOutAt = attendance.check_out_time ? Date.parse(attendance.check_out_time) : NaN;
+      if (Number.isFinite(checkOutAt) && checkOutAt >= rangeStart && checkOutAt < rangeEnd) rows.push({
+        id: `attendance-check-out:${attendance.id}`, employee_id: attendance.employee_id, attendance_id: attendance.id,
+        event_time: attendance.check_out_time, latitude: attendance.check_out_latitude, longitude: attendance.check_out_longitude,
+        location_name: '', full_address: null, site_id: null, site: null,
+        event_type: attendance.checkout_type === 'auto_checkout' ? 'auto_checkout' : 'check_out', created_at: attendance.check_out_time,
+      });
+      return rows;
+    });
+    return buildTimelineSegments(fallbackEvents);
+  }
   const attendanceIds = [...new Set(events.map(event => event.attendance_id).filter((id): id is number => Number.isFinite(id)))];
   const attendance: AttendanceBoundary[] = [];
   // PostgREST URLs have practical size limits. Load only referenced sessions in

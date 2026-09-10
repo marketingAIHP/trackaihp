@@ -13,7 +13,7 @@ function fixture() {
     let filters=[], orders=[], max=Infinity, rangeStart=0, single=false, write;
     const q={select:()=>q,eq:(k,v)=>(filters.push(r=>r[k]===v),q),in:(k,v)=>(filters.push(r=>v.includes(r[k])),q),
       lt:(k,v)=>(filters.push(r=>r[k]<v),q),lte:(k,v)=>(filters.push(r=>r[k]<=v),q),gte:(k,v)=>(filters.push(r=>r[k]>=v),q),
-      not:(k,op,v)=>(filters.push(r=>r[k]!=null),q),or:s=>(filters.push(r=>!r.check_out_time||r.check_out_time>=s.split('.gte.')[1]),q),
+      not:(k,op,v)=>(filters.push(r=>r[k]!=null),q),or:s=>{const threshold=s.includes('.gte.')?s.split('.gte.')[1]:s.split('.gt.')[1];filters.push(r=>!r.check_out_time||r.check_out_time>threshold);return q},
       order:(k,opt={})=>(orders.push([k,opt.ascending!==false]),q),limit:n=>(max=n,q),range:(a,b)=>(rangeStart=a,max=b-a+1,q),maybeSingle:()=>(single=true,q),
       upsert:r=>(write=r,q),then:(resolve,reject)=>Promise.resolve().then(()=>{
         if(offline) return {data:null,error:{code:'NETWORK_ERROR',message:'Network unavailable'}};
@@ -75,10 +75,12 @@ test('retries of an older fix do not inherit a newer site or session',async()=>{
 test('only one terminal is stored per attendance',async()=>{
  const f=fixture();for(let i=0;i<2;i++)await f.service.recordTimelineEvent({employeeId:36,attendanceId:1,eventType:'check_out',eventTime:time(60)});assert.equal(f.rows.length,1);
 });
-test('report query retrieves more than 1000 records; no attendance fallback',async()=>{
+test('report query retrieves more than 1000 records and falls back to real attendance boundaries',async()=>{
  const f=fixture();for(let i=0;i<1205;i++)f.rows.push({id:i+1,employee_id:36,attendance_id:1,event_time:new Date(Date.parse(time(0))+i*1000).toISOString(),event_type:'location_update',site_id:1,location_name:'Site A'});
  const segments=await f.service.getLocationTimeline(36,time(0),time(60));assert.equal(segments[0].end_time,f.rows[1204].event_time);
- f.rows.length=0;assert.deepEqual(await f.service.getLocationTimeline(36,time(0),time(60)),[]);
+ f.rows.length=0;const fallback=await f.service.getLocationTimeline(36,time(0),time(61));
+ assert.deepEqual(fallback.map(row=>row.event_type),['unknown_location','check_out']);
+ assert.equal(fallback[0].attendance_id,1);
 });
 
 
