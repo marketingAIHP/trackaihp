@@ -15,7 +15,17 @@ export const TIMELINE_MOVEMENT_METERS = 75;
 const REPORT_SITE_STABILITY_MS = 5 * 60 * 1000;
 type TimelineInput = { employeeId: number; attendanceId?: number | null; eventType: TimelineEventType; coordinates?: Coordinates; accuracy?: number | null; eventTime?: string; site?: WorkSite | null; source?: string };
 type Observation = Omit<TimelineInput, 'eventType'> & { coordinates: Coordinates; eventTime: string };
-type Pending = { kind: 'observation'; input: Observation } | { kind: 'event'; input: TimelineInput };
+type RetryMetadata = {
+  failureCount: number;
+  lastFailureAt: string;
+  lastError: string;
+  // A deferred item remains in the same durable outbox key. Its original GPS
+  // payload and timestamp are never replaced or discarded.
+  retryAfter?: string;
+};
+type Pending =
+  | { kind: 'observation'; input: Observation; retry?: RetryMetadata }
+  | { kind: 'event'; input: TimelineInput; retry?: RetryMetadata };
 export type TimelineSegment = {
   id: string; employee_id: number; attendance_id?: number | null; event_time: string; end_time?: string | null;
   event_type: 'at_site' | 'travelling' | 'unknown_location' | 'check_out' | 'auto_checkout';
@@ -30,6 +40,10 @@ type AttendanceBoundary = {
 // One durable key per fix avoids read/modify/write queue races between headless
 // and foreground runtimes. Failed observations are never evicted after N retries.
 const pendingPrefix = (employeeId: number) => `@timeline:pending:v2:${employeeId}:`;
+const RETRY_FAILURES_BEFORE_DEFER = 3;
+const DEFERRED_RETRY_DELAY_MS = 5 * 60 * 1000;
+const DRAIN_OLD_BATCH_SIZE = 25;
+const DRAIN_NEW_BATCH_SIZE = 25;
 const employeeWork = new Map<number, Promise<void>>();
 const verboseDiagnostics = process.env.EXPO_PUBLIC_LOCATION_TIMELINE_DIAGNOSTICS === 'true';
 export function logTimelineDiagnostic(input: Partial<TimelineInput>, storageDecision: string, storageReason: string, extra: Record<string, unknown> = {}) {
@@ -144,8 +158,42 @@ async function processPending(key: string, item: Pending, client: SupabaseClient
       logTimelineDiagnostic(item.input, 'REJECTED', error.message);
       await AsyncStorage.removeItem(key);
       return true;
-    } else { failure(item.input, error); return false; }
+    }
+    // Do not let one unavailable historical observation block all newer fixes.
+    // Keep the exact item under its existing key and only add bounded retry
+    // metadata, so it remains recoverable after an app restart.
+    const failureCount = (item.retry?.failureCount || 0) + 1;
+    const now = new Date();
+    const retryAfter = failureCount >= RETRY_FAILURES_BEFORE_DEFER
+      ? new Date(now.getTime() + DEFERRED_RETRY_DELAY_MS).toISOString()
+      : undefined;
+    const retained: Pending = {
+      ...item,
+      retry: {
+        failureCount,
+        lastFailureAt: now.toISOString(),
+        lastError: error?.message || String(error),
+        ...(retryAfter ? { retryAfter } : {}),
+      },
+    };
+    try {
+      await AsyncStorage.setItem(key, JSON.stringify(retained));
+    } catch (storageError: any) {
+      // The original pending value was not removed, so even this metadata
+      // write failure cannot silently lose an unsynchronized observation.
+      failure(item.input, storageError);
+    }
+    failure(item.input, error);
+    logTimelineDiagnostic(item.input, 'QUEUED', retryAfter ? 'DEFERRED_RETRY' : 'RETRY_PENDING', {
+      failureCount,
+      retryAfter: retryAfter ?? null,
+    });
+    return false;
   }
+}
+function retryIsDue(item: Pending, now: number) {
+  const retryAfter = item.retry?.retryAfter;
+  return !retryAfter || !Number.isFinite(Date.parse(retryAfter)) || Date.parse(retryAfter) <= now;
 }
 async function drain(employeeId: number, client: SupabaseClient) {
   // Import the old queue without dropping its remaining events.
@@ -164,13 +212,19 @@ async function drain(employeeId: number, client: SupabaseClient) {
   // Bound each headless invocation. Recover the oldest history while also
   // admitting current-session fixes so a large historical backlog cannot
   // starve today's attendance. Untouched entries remain durable.
-  const batch = entries.length <= 50
-    ? entries
-    : [...entries.slice(0, 25), ...entries.slice(-25)];
+  const dueEntries = entries.filter(({ item }) => retryIsDue(item, Date.now()));
+  const batch = dueEntries.length <= DRAIN_OLD_BATCH_SIZE + DRAIN_NEW_BATCH_SIZE
+    ? dueEntries
+    : [...dueEntries.slice(0, DRAIN_OLD_BATCH_SIZE), ...dueEntries.slice(-DRAIN_NEW_BATCH_SIZE)];
   for (const { key, item } of batch) {
-    if (!await processPending(key, item, client)) break;
+    // A retryable failure is isolated to this item. Continue so an old bad
+    // observation cannot starve current-session observations.
+    await processPending(key, item, client);
   }
-  if (entries.length > 50) logTimelineDiagnostic({ employeeId }, 'QUEUED', 'RETRY_BACKLOG', { remaining: entries.length - 50 });
+  if (entries.length > batch.length) logTimelineDiagnostic({ employeeId }, 'QUEUED', 'RETRY_BACKLOG', {
+    remaining: entries.length - batch.length,
+    deferred: entries.length - dueEntries.length,
+  });
 }
 export async function retryPendingTimelineEvents(employeeId: number, databaseClient: SupabaseClient = supabase) {
   try { await serialize(employeeId, () => drain(employeeId, databaseClient)); }

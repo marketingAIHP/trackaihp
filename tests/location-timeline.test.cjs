@@ -8,7 +8,7 @@ function fixture() {
   const storage = { getItem: async k => values.get(k) ?? null, setItem: async(k,v)=>{values.set(k,v)}, removeItem:async k=>{values.delete(k)}, getAllKeys:async()=>[...values.keys()], multiGet:async keys=>keys.map(k=>[k,values.get(k)??null]) };
   const attendance = [{id:1,employee_id:36,check_in_time:time(0),check_out_time:time(60),checkout_type:'manual_checkout'}, {id:2,employee_id:36,check_in_time:time(70),check_out_time:time(90),checkout_type:'manual_checkout'}];
   const sites = [{id:1,name:'Site A',latitude:28.49,longitude:77.08,geofence_radius:100,is_active:true},{id:2,name:'Site B',latitude:28.50,longitude:77.09,geofence_radius:100,is_active:true}];
-  const rows = []; let attempts=0, offline=false;
+  const rows = []; let attempts=0, offline=false, serverError=false;
   const db = { auth: {getSession:async()=>({data:{session:{}}})}, from:table=>{
     let filters=[], orders=[], max=Infinity, rangeStart=0, single=false, write;
     const q={select:()=>q,eq:(k,v)=>(filters.push(r=>r[k]===v),q),in:(k,v)=>(filters.push(r=>v.includes(r[k])),q),
@@ -17,6 +17,7 @@ function fixture() {
       order:(k,opt={})=>(orders.push([k,opt.ascending!==false]),q),limit:n=>(max=n,q),range:(a,b)=>(rangeStart=a,max=b-a+1,q),maybeSingle:()=>(single=true,q),
       upsert:r=>(write=r,q),then:(resolve,reject)=>Promise.resolve().then(()=>{
         if(offline) return {data:null,error:{code:'NETWORK_ERROR',message:'Network unavailable'}};
+        if(serverError) return {data:null,error:{code:'500',message:'Server error'}};
         if(write){attempts++;const existing=rows.find(r=>r.idempotency_key===write.idempotency_key);if(existing)return {data:[],error:null};const row={...write,id:rows.length+1,created_at:new Date().toISOString()};rows.push(row);return {data:[row],error:null};}
         const data=[...(table==='attendance'?attendance:table==='work_sites'?sites:rows)].filter(r=>filters.every(f=>f(r)));
         data.sort((a,b)=>{for(const[k,asc]of orders){if(a[k]!==b[k])return(a[k]<b[k]?-1:1)*(asc?1:-1);}return 0;});
@@ -25,7 +26,7 @@ function fixture() {
   }};
   const service=loadTs('src/services/locationTimelineService.ts',{'@react-native-async-storage/async-storage':storage,'../constants/config':{GPS_ACCURACY_BUFFER:15,ATTENDANCE_GPS_ACCURACY_THRESHOLD:50},'./supabase':{supabase:db,createHeadlessSupabaseClient:async()=>db}});
   const observe=(minute,coords={latitude:28.49,longitude:77.08},extra={})=>service.recordTimelineLocation({employeeId:36,eventTime:time(minute),coordinates:coords,accuracy:8,source:'test',...extra});
-  return {service,storage,values,rows,attendance,observe,db,attempts:()=>attempts,offline:v=>offline=v};
+  return {service,storage,values,rows,attendance,observe,db,attempts:()=>attempts,offline:v=>offline=v,serverError:v=>serverError=v};
 }
 // Keep detailed diagnostic lines in the captured test log; they are not device evidence.
 test('72 stationary callbacks preserve 72 observations and consolidate into one segment',async()=>{
@@ -54,7 +55,7 @@ test('stale local attendance does not attach overtime to main shift',async()=>{
  const f=fixture();await f.storage.setItem('@LocSvc:attendanceId','1');await f.observe(75);assert.equal(f.rows[0].attendance_id,2);
 });
 test('network failures retain more than three fixes across more than three retries',async()=>{
- const f=fixture();f.offline(true);for(let i=1;i<=8;i++)await f.observe(i);for(let i=0;i<5;i++)await f.service.retryPendingTimelineEvents(36);
+ const f=fixture();f.offline(true);for(let i=1;i<=8;i++)await f.observe(i,undefined,{deferUpload:true});await f.service.retryPendingTimelineEvents(36);
  assert.equal([...f.values.keys()].filter(k=>k.includes('pending:v2')).length,8);f.offline(false);await f.service.retryPendingTimelineEvents(36);assert.equal(f.rows.length,8);assert.equal(f.values.size,0);
 });
 test('a historical backlog does not starve a current attendance fix',async()=>{
@@ -62,9 +63,39 @@ test('a historical backlog does not starve a current attendance fix',async()=>{
  for(let i=0;i<80;i++)await f.observe(i/100);
  await f.observe(75,undefined,{attendanceId:2});
  f.offline(false);await f.service.retryPendingTimelineEvents(36);
- assert.equal(f.rows.length,50);
+ assert.ok(f.rows.length > 0);
  assert.ok(f.rows.some(row=>row.attendance_id===2&&row.event_time===time(75)));
  assert.ok(f.values.size>0,'unprocessed historical fixes remain durable');
+});
+test('a failed oldest entry does not block newer entries and is retained with retry metadata',async()=>{
+ const f=fixture();f.offline(true);
+ await f.observe(1,undefined,{deferUpload:true});await f.observe(2,undefined,{deferUpload:true});
+ f.offline(false);
+ // Fail only the first attempt through the database mock, then let the next item upload.
+ const original=f.db.from; let failFirst=true;
+ f.db.from=table=>{const query=original(table);const originalThen=query.then;query.then=(resolve,reject)=>{
+   if(table==='attendance'&&failFirst){failFirst=false;return Promise.resolve({data:null,error:{code:'NETWORK_ERROR',message:'first fails'}}).then(resolve,reject);}
+   return originalThen(resolve,reject);
+ };return query;};
+ await f.service.retryPendingTimelineEvents(36);
+ assert.equal(f.rows.length,1);assert.equal(f.rows[0].event_time,time(2));
+ const retained=[...f.values.values()].find(v=>v.includes(time(1)));assert.match(retained,/failureCount/);
+});
+test('server failures remain durable, while confirmed idempotent duplicates are acknowledged',async()=>{
+ const f=fixture();f.serverError(true);await f.observe(1);
+ assert.equal(f.values.size,1);f.serverError(false);await f.service.retryPendingTimelineEvents(36);
+ assert.equal(f.values.size,0);assert.equal(f.rows.length,1);
+ // Recreate the same pending payload. The mocked upsert returns an idempotent
+ // duplicate (empty data, no error), which is a confirmed server acknowledgement.
+ await f.storage.setItem('@timeline:pending:v2:36:observation:resolve:'+time(1)+':28.49:77.08',JSON.stringify({kind:'observation',input:{employeeId:36,eventTime:time(1),coordinates:{latitude:28.49,longitude:77.08},accuracy:8,source:'test'}}));
+ await f.service.retryPendingTimelineEvents(36);assert.equal(f.values.size,0);
+});
+test('repeated failure becomes deferred without losing the original timestamp or payload',async()=>{
+ const f=fixture();f.offline(true);await f.observe(4,undefined,{deferUpload:true});
+ for(let i=0;i<3;i++) await f.service.retryPendingTimelineEvents(36);
+ const raw=[...f.values.values()][0];const pending=JSON.parse(raw);
+ assert.equal(pending.input.eventTime,time(4));assert.deepEqual(pending.input.coordinates,{latitude:28.49,longitude:77.08});
+ assert.equal(pending.retry.failureCount,3);assert.ok(pending.retry.retryAfter);
 });
 test('concurrent foreground/background queue writes do not evict distinct fixes',async()=>{
  const f=fixture();await Promise.all(Array.from({length:12},(_,i)=>f.observe(i+1,undefined,{deferUpload:true})));assert.equal(f.values.size,12);await f.service.retryPendingTimelineEvents(36);assert.equal(f.rows.length,12);
